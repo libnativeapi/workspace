@@ -1,0 +1,24 @@
+[submodule "nativeapi"]
+	path = nativeapi
+	url = ../nativeapi.git
+	branch = main
+[submodule "codegen"]
+	path = codegen
+	url = ../codegen.git
+	branch = main
+[submodule "nativeapi-flutter"]
+	path = nativeapi-flutter
+	url = ../nativeapi-flutter.git
+	branch = main
+[submodule "nativeapi-rust"]
+	path = nativeapi-rust
+	url = ../nativeapi-rust.git
+	branch = main
+[submodule "nativeapi-swift"]
+	path = nativeapi-swift
+	url = ../nativeapi-swift.git
+	branch = main
+[submodule "nativeapi-kotlin"]
+	path = nativeapi-kotlin
+	url = ../nativeapi-kotlin.git
+	branch = main
