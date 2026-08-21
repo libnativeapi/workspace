@@ -6,8 +6,8 @@ Aggregates all [libnativeapi](https://github.com/libnativeapi) repositories as g
 
 | Submodule | Description |
 | --- | --- |
-| [nativeapi](https://github.com/libnativeapi/nativeapi) | C++ core library |
-| [codegen](https://github.com/libnativeapi/codegen) | Binding code generator |
+| [core](https://github.com/libnativeapi/nativeapi) | C++ core library (`nativeapi`) |
+| [tools/codegen](https://github.com/libnativeapi/codegen) | Binding code generator |
 | [bindings/nativeapi-flutter](https://github.com/libnativeapi/nativeapi-flutter) | Flutter binding |
 | [bindings/nativeapi-rust](https://github.com/libnativeapi/nativeapi-rust) | Rust binding |
 | [bindings/nativeapi-swift](https://github.com/libnativeapi/nativeapi-swift) | Swift binding |
