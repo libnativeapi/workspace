@@ -7,18 +7,18 @@
 	url = ../codegen.git
 	branch = main
 [submodule "nativeapi-flutter"]
-	path = nativeapi-flutter
+	path = bindings/nativeapi-flutter
 	url = ../nativeapi-flutter.git
 	branch = main
 [submodule "nativeapi-rust"]
-	path = nativeapi-rust
+	path = bindings/nativeapi-rust
 	url = ../nativeapi-rust.git
 	branch = main
 [submodule "nativeapi-swift"]
-	path = nativeapi-swift
+	path = bindings/nativeapi-swift
 	url = ../nativeapi-swift.git
 	branch = main
 [submodule "nativeapi-kotlin"]
-	path = nativeapi-kotlin
+	path = bindings/nativeapi-kotlin
 	url = ../nativeapi-kotlin.git
 	branch = main

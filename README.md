@@ -8,10 +8,10 @@ Aggregates all [libnativeapi](https://github.com/libnativeapi) repositories as g
 | --- | --- |
 | [nativeapi](https://github.com/libnativeapi/nativeapi) | C++ core library |
 | [codegen](https://github.com/libnativeapi/codegen) | Binding code generator |
-| [nativeapi-flutter](https://github.com/libnativeapi/nativeapi-flutter) | Flutter binding |
-| [nativeapi-rust](https://github.com/libnativeapi/nativeapi-rust) | Rust binding |
-| [nativeapi-swift](https://github.com/libnativeapi/nativeapi-swift) | Swift binding |
-| [nativeapi-kotlin](https://github.com/libnativeapi/nativeapi-kotlin) | Kotlin binding |
+| [bindings/nativeapi-flutter](https://github.com/libnativeapi/nativeapi-flutter) | Flutter binding |
+| [bindings/nativeapi-rust](https://github.com/libnativeapi/nativeapi-rust) | Rust binding |
+| [bindings/nativeapi-swift](https://github.com/libnativeapi/nativeapi-swift) | Swift binding |
+| [bindings/nativeapi-kotlin](https://github.com/libnativeapi/nativeapi-kotlin) | Kotlin binding |
 
 ## Getting started
 
