@@ -10,10 +10,6 @@
 	path = bindings/rust
 	url = ../nativeapi-rust.git
 	branch = main
-[submodule "nativeapi-swift"]
-	path = bindings/swift
-	url = ../nativeapi-swift.git
-	branch = main
 [submodule "bindings/csharp"]
 	path = bindings/csharp
 	url = ../nativeapi-csharp.git

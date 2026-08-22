@@ -9,7 +9,6 @@ Aggregates all [libnativeapi](https://github.com/libnativeapi) repositories as g
 | [core](https://github.com/libnativeapi/nativeapi) | C++ core library (`nativeapi`) |
 | [bindings/flutter](https://github.com/libnativeapi/nativeapi-flutter) | Flutter binding (`nativeapi-flutter`) |
 | [bindings/rust](https://github.com/libnativeapi/nativeapi-rust) | Rust binding (`nativeapi-rust`) |
-| [bindings/swift](https://github.com/libnativeapi/nativeapi-swift) | Swift binding (`nativeapi-swift`) |
 | [bindings/csharp](https://github.com/libnativeapi/nativeapi-csharp) | C# binding (`nativeapi-csharp`) |
 
 ## Getting started

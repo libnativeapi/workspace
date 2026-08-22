@@ -10,5 +10,5 @@ sync:
 
 # Stage updated submodule pointers
 bump:
-	git add core bindings/flutter bindings/rust bindings/swift bindings/csharp
+	git add core bindings/flutter bindings/rust bindings/csharp
 	@git status --short

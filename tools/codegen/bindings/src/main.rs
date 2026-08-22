@@ -9,7 +9,6 @@ use codegen_shared::{naming, resolve_repo_root, write_files};
 mod csharp;
 mod dart;
 mod rust;
-mod swift;
 
 #[derive(Debug, Parser)]
 #[command(name = "codegen-bindings")]
@@ -29,11 +28,6 @@ struct CliArgs {
     /// this is absent.
     #[arg(long)]
     rust: Option<PathBuf>,
-
-    /// Path to the nativeapi-swift repository. Swift bindings are skipped when
-    /// this is absent.
-    #[arg(long)]
-    swift: Option<PathBuf>,
 
     /// Path to the nativeapi-flutter repository. Dart bindings are skipped
     /// when this is absent.
@@ -59,12 +53,10 @@ fn main() -> Result<()> {
     let prefix = "native_";
 
     let rust_out = binding_out(args.rust.as_deref(), "crates/nativeapi/src");
-    let swift_out = binding_out(args.swift.as_deref(), "Sources/NativeAPI");
     let dart_out = binding_out(args.dart.as_deref(), "packages/nativeapi/lib/src");
     let csharp_out = binding_out(args.csharp.as_deref(), "src/NativeAPI");
 
     report_binding("rust", &rust_out);
-    report_binding("swift", &swift_out);
     report_binding("dart", &dart_out);
     report_binding("csharp", &csharp_out);
 
@@ -77,9 +69,6 @@ fn main() -> Result<()> {
     let mut files = Vec::new();
     if let Some(out) = &rust_out {
         files.push(rust::generate_modules(&api, &origins, out));
-    }
-    if let Some(out) = &swift_out {
-        files.push(swift::generate_support(&api, out));
     }
     if let Some(out) = &dart_out {
         files.push(dart::generate_barrel(&api, out));
@@ -95,8 +84,8 @@ fn main() -> Result<()> {
         ));
     }
     for header in &api.headers {
-        // Swift mirrors the source tree, so `foundation/geometry.h` lands in
-        // `Sources/NativeAPI/foundation/`. Derived from the header's own path
+        // C# mirrors the source tree, so `foundation/geometry.h` lands in
+        // `src/NativeAPI/Foundation/`. Derived from the header's own path
         // rather than from its position in API_HEADERS, which stops matching
         // once event headers are folded away.
         let subdir = header
@@ -108,9 +97,6 @@ fn main() -> Result<()> {
 
         if let Some(out) = &rust_out {
             files.push(rust::generate(&api, header, &origins, out, prefix));
-        }
-        if let Some(out) = &swift_out {
-            files.push(swift::generate(&api, header, &origins, out, prefix, subdir));
         }
         if let Some(out) = &dart_out {
             files.push(dart::generate(&api, header, &origins, out, prefix));
