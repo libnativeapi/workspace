@@ -3,18 +3,18 @@
 	url = ../nativeapi.git
 	branch = main
 [submodule "nativeapi-flutter"]
-	path = bindings/nativeapi-flutter
+	path = bindings/flutter
 	url = ../nativeapi-flutter.git
 	branch = main
 [submodule "nativeapi-rust"]
-	path = bindings/nativeapi-rust
+	path = bindings/rust
 	url = ../nativeapi-rust.git
 	branch = main
 [submodule "nativeapi-swift"]
-	path = bindings/nativeapi-swift
+	path = bindings/swift
 	url = ../nativeapi-swift.git
 	branch = main
 [submodule "nativeapi-kotlin"]
-	path = bindings/nativeapi-kotlin
+	path = bindings/kotlin
 	url = ../nativeapi-kotlin.git
 	branch = main

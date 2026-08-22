@@ -6,7 +6,7 @@ This is a workspace repo: `core/` and `bindings/*` are git submodules of indepen
 
 - `core` — the C++ core library (repo: `nativeapi`). The source of truth for the native API surface (windows, tray icons, menus, displays, keyboard, dialogs, storage, etc.) with per-platform implementations (macOS/Windows/Linux).
 - `tools/codegen` — in-repo (not a submodule) Rust workspace that generates the C ABI and language bindings from the core headers. Three crates: `shared` (libclang parser, IR, naming), `capi` (C ABI + umbrella header), `bindings` (Rust/Swift/Dart, consumes the IR JSON emitted by `capi`). Run via `./codegen` at the workspace root; `./codegen check` verifies generated files are up to date.
-- `bindings/nativeapi-flutter`, `bindings/nativeapi-rust`, `bindings/nativeapi-swift`, `bindings/nativeapi-kotlin` — language bindings wrapping the core library. The Rust binding layers `crates/nativeapi` (safe API) over `crates/cnativeapi` (FFI).
+- `bindings/flutter`, `bindings/rust`, `bindings/swift`, `bindings/kotlin` — language bindings wrapping the core library (repos: `nativeapi-<lang>`). The Rust binding layers `crates/nativeapi` (safe API) over `crates/cnativeapi` (FFI).
 
 A change to the core C++ API typically ripples: edit headers in `core`, run `./codegen`, then fix up each binding (see tools/codegen/README.md for the required manual follow-ups). When making such a change, update all affected repos in the same session and verify each still builds.
 

@@ -27,9 +27,9 @@ DEFAULT_IR = CODEGEN / "target" / "ir.json"
 
 # lang -> (cli flag of codegen-bindings, binding repo path)
 BINDINGS = {
-    "rust": ("--rust", WORKSPACE / "bindings" / "nativeapi-rust"),
-    "swift": ("--swift", WORKSPACE / "bindings" / "nativeapi-swift"),
-    "dart": ("--dart", WORKSPACE / "bindings" / "nativeapi-flutter"),
+    "rust": ("--rust", WORKSPACE / "bindings" / "rust"),
+    "swift": ("--swift", WORKSPACE / "bindings" / "swift"),
+    "dart": ("--dart", WORKSPACE / "bindings" / "flutter"),
 }
 
 

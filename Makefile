@@ -10,5 +10,5 @@ sync:
 
 # Stage updated submodule pointers
 bump:
-	git add core bindings/nativeapi-flutter bindings/nativeapi-rust bindings/nativeapi-swift bindings/nativeapi-kotlin
+	git add core bindings/flutter bindings/rust bindings/swift bindings/kotlin
 	@git status --short

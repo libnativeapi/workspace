@@ -7,10 +7,10 @@ Aggregates all [libnativeapi](https://github.com/libnativeapi) repositories as g
 | Submodule | Description |
 | --- | --- |
 | [core](https://github.com/libnativeapi/nativeapi) | C++ core library (`nativeapi`) |
-| [bindings/nativeapi-flutter](https://github.com/libnativeapi/nativeapi-flutter) | Flutter binding |
-| [bindings/nativeapi-rust](https://github.com/libnativeapi/nativeapi-rust) | Rust binding |
-| [bindings/nativeapi-swift](https://github.com/libnativeapi/nativeapi-swift) | Swift binding |
-| [bindings/nativeapi-kotlin](https://github.com/libnativeapi/nativeapi-kotlin) | Kotlin binding |
+| [bindings/flutter](https://github.com/libnativeapi/nativeapi-flutter) | Flutter binding (`nativeapi-flutter`) |
+| [bindings/rust](https://github.com/libnativeapi/nativeapi-rust) | Rust binding (`nativeapi-rust`) |
+| [bindings/swift](https://github.com/libnativeapi/nativeapi-swift) | Swift binding (`nativeapi-swift`) |
+| [bindings/kotlin](https://github.com/libnativeapi/nativeapi-kotlin) | Kotlin binding (`nativeapi-kotlin`) |
 
 ## Getting started
 
