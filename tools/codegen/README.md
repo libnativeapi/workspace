@@ -64,7 +64,7 @@ bindgen / dart 未安装时对应步骤跳过并告警。
 2. umbrella header → `core/include/nativeapi.h`
 3. Rust FFI → `bindings/rust/crates/nativeapi/src/`
 5. Dart FFI → `bindings/flutter/packages/nativeapi/lib/src/`
-6. C# FFI → `bindings/csharp/src/NativeAPI/`
+6. C# FFI → `bindings/csharp/src/CNativeAPI/generated/`（raw 层）+ `bindings/csharp/src/NativeAPI/`（公开层）
 
 `core/src/capi/` **全部由本工具生成**，唯一的例外是手写支持层
 `string_utils_c.{h,cpp}`（字符串 / 值容器的所有权原语）。生成物首行都带
@@ -81,7 +81,7 @@ C ABI 是所有绑定的地基，新增符号后需要同步下游：
    的 `IdTypeTag<T>` 注册表里追加一个编号（**只追加，不改已有编号**）。漏了会在
    编译期报错，不会静默出问题。
 2. **submodule**：`bindings/rust/crates/cnativeapi/cxx_impl`、
-   `bindings/flutter/packages/cnativeapi/cxx_impl`、`bindings/csharp/cxx_impl`
+   `bindings/flutter/packages/cnativeapi/cxx_impl`、`bindings/csharp/src/CNativeAPI/cxx_impl`
    都是 nativeapi 仓库的 submodule，提交 core 后需要 `git submodule update --remote`
 3. **Rust raw FFI**：`crates/cnativeapi/src/bindings.rs` 由 bindgen 生成并入库，
    新增 C 符号后需重新生成（在 workspace 根目录执行）：

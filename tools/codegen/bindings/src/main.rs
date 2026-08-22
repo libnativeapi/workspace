@@ -54,7 +54,7 @@ fn main() -> Result<()> {
 
     let rust_out = binding_out(args.rust.as_deref(), "crates/nativeapi/src");
     let dart_out = binding_out(args.dart.as_deref(), "packages/nativeapi/lib/src");
-    let csharp_out = binding_out(args.csharp.as_deref(), "src/NativeAPI");
+    let csharp_out = binding_out(args.csharp.as_deref(), "src");
 
     report_binding("rust", &rust_out);
     report_binding("dart", &dart_out);
@@ -102,7 +102,7 @@ fn main() -> Result<()> {
             files.push(dart::generate(&api, header, &origins, out, prefix));
         }
         if let Some(out) = &csharp_out {
-            files.push(csharp::generate(&api, header, &origins, out, prefix, subdir));
+            files.extend(csharp::generate(&api, header, &origins, out, prefix, subdir));
         }
     }
 

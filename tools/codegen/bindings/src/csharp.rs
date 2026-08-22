@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use heck::{ToSnakeCase, ToUpperCamelCase};
+use heck::{ToLowerCamelCase, ToSnakeCase, ToUpperCamelCase};
 
 use codegen_shared::naming::{
     c_add_listener_symbol, c_constructor_symbol, c_free_symbol, c_list_field,
@@ -16,60 +16,146 @@ use codegen_shared::ir::{
 };
 use codegen_shared::GeneratedFile;
 
-/// Per-file collection of DllImport declarations and callback delegate types,
-/// emitted together at the bottom of the file.
+const RAW_NAMESPACE: &str = "CNativeAPI";
+const PUBLIC_NAMESPACE: &str = "NativeAPI";
+
+/// Per-header emission state. Raw interop pieces (C struct mirrors, callback
+/// delegates, DllImport declarations) land in the CNativeAPI assembly; public
+/// wrappers land in the NativeAPI assembly.
 #[derive(Default)]
-struct FileCtx {
+struct Ctx {
+    raw: String,
+    public: String,
     externs: BTreeSet<String>,
     delegates: BTreeMap<String, String>,
 }
 
+/// The raw and public files for one header. The raw file is omitted when the
+/// header contributes nothing to the interop layer (enum-only headers).
 pub fn generate(
     api: &Api,
     header: &Header,
     _origins: &TypeOrigins,
-    csharp_out: &Path,
+    csharp_src: &Path,
     prefix: &str,
     subdir: Option<&Path>,
-) -> GeneratedFile {
+) -> Vec<GeneratedFile> {
     let file_name = format!("{}.cs", header.stem.to_upper_camel_case());
-    let out_path = match subdir {
+    let mut ctx = Ctx::default();
+    generate_header(&mut ctx, api, header, prefix);
+
+    let mut files = Vec::new();
+    let raw_body = finish_raw(&ctx);
+    let public_path = mirrored_path(&csharp_src.join(PUBLIC_NAMESPACE), subdir, &file_name);
+    files.push(GeneratedFile {
+        path: public_path,
+        contents: finish_public(ctx.public),
+    });
+
+    if let Some(contents) = raw_body {
+        let raw_root = csharp_src.join(RAW_NAMESPACE).join("generated");
+        files.push(GeneratedFile {
+            path: mirrored_path(&raw_root, subdir, &file_name),
+            contents,
+        });
+    }
+    files
+}
+
+fn mirrored_path(root: &Path, subdir: Option<&Path>, file_name: &str) -> PathBuf {
+    match subdir {
         Some(dir) => {
-            let mut path = csharp_out.to_path_buf();
+            let mut path = root.to_path_buf();
             for part in dir.components() {
                 path.push(part.as_os_str().to_string_lossy().to_upper_camel_case());
             }
-            path.join(&file_name)
+            path.join(file_name)
         }
-        None => csharp_out.join(&file_name),
-    };
-    GeneratedFile {
-        path: out_path,
-        contents: generate_csharp(api, header, prefix),
+        None => root.join(file_name),
     }
 }
 
-/// Shared runtime pieces every generated file leans on: the library name, the
-/// delegate keeper, and the string list/map interop helpers.
-pub fn generate_support(csharp_out: &Path) -> GeneratedFile {
-    let mut out = String::new();
-    banner(&mut out);
+fn banner(out: &mut String, namespace: &str, uses_raw: bool) {
+    writeln!(out, "// AUTO-GENERATED. DO NOT EDIT.").unwrap();
     writeln!(
         out,
-        r#"internal static class Libraries
+        "// Any manual changes WILL BE LOST when this file is regenerated."
+    )
+    .unwrap();
+    writeln!(out, "#nullable enable").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "using System;").unwrap();
+    writeln!(out, "using System.Collections.Generic;").unwrap();
+    writeln!(out, "using System.Runtime.InteropServices;").unwrap();
+    if uses_raw {
+        writeln!(out, "using {RAW_NAMESPACE};").unwrap();
+    }
+    writeln!(out).unwrap();
+    writeln!(out, "namespace {namespace};").unwrap();
+    writeln!(out).unwrap();
+}
+
+fn finish_public(body: String) -> String {
+    let mut out = String::new();
+    banner(&mut out, PUBLIC_NAMESPACE, true);
+    out.push_str(&body);
+    out
+}
+
+fn finish_raw(ctx: &Ctx) -> Option<String> {
+    if ctx.raw.is_empty() && ctx.externs.is_empty() && ctx.delegates.is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    banner(&mut out, RAW_NAMESPACE, false);
+    out.push_str(&ctx.raw);
+    for signature in ctx.delegates.values() {
+        writeln!(out, "{signature}").unwrap();
+        writeln!(out).unwrap();
+    }
+    if !ctx.externs.is_empty() {
+        writeln!(out, "public static partial class Interop").unwrap();
+        writeln!(out, "{{").unwrap();
+        let mut first = true;
+        for decl in &ctx.externs {
+            if !first {
+                writeln!(out).unwrap();
+            }
+            first = false;
+            writeln!(
+                out,
+                "    [DllImport(Libraries.NativeApi, CallingConvention = CallingConvention.Cdecl)]"
+            )
+            .unwrap();
+            writeln!(out, "    {decl}").unwrap();
+        }
+        writeln!(out, "}}").unwrap();
+        writeln!(out).unwrap();
+    }
+    Some(out)
+}
+
+/// Shared runtime pieces of the raw layer: the library name, the delegate
+/// keeper, and the string list/map interop helpers.
+pub fn generate_support(csharp_src: &Path) -> GeneratedFile {
+    let mut out = String::new();
+    banner(&mut out, RAW_NAMESPACE, false);
+    writeln!(
+        out,
+        r#"public static class Libraries
 {{
-    internal const string NativeApi = "nativeapi";
+    public const string NativeApi = "nativeapi";
 }}
 
 /// <summary>
 /// Keeps callback delegates alive for the lifetime of the process: the C ABI
 /// stores the function pointer but offers no hook to release it.
 /// </summary>
-internal static class CallbackKeeper
+public static class CallbackKeeper
 {{
     private static readonly List<Delegate> Retained = new();
 
-    internal static T Retain<T>(T callback) where T : Delegate
+    public static T Retain<T>(T callback) where T : Delegate
     {{
         lock (Retained)
         {{
@@ -80,33 +166,33 @@ internal static class CallbackKeeper
 }}
 
 [StructLayout(LayoutKind.Sequential)]
-internal struct native_string_list_t
+public struct native_string_list_t
 {{
-    internal IntPtr items;
-    internal CLong count;
+    public IntPtr items;
+    public CLong count;
 }}
 
 [StructLayout(LayoutKind.Sequential)]
-internal struct native_string_map_t
+public struct native_string_map_t
 {{
-    internal IntPtr keys;
-    internal IntPtr values;
-    internal CLong count;
+    public IntPtr keys;
+    public IntPtr values;
+    public CLong count;
 }}
 
-internal static partial class Interop
+public static partial class Interop
 {{
     [DllImport(Libraries.NativeApi, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void {STRING_FREE_FN}(IntPtr str);
+    public static extern void {STRING_FREE_FN}(IntPtr str);
 
     [DllImport(Libraries.NativeApi, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void {STRING_LIST_FREE_FN}(ref native_string_list_t list);
+    public static extern void {STRING_LIST_FREE_FN}(ref native_string_list_t list);
 
     [DllImport(Libraries.NativeApi, CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void {STRING_MAP_FREE_FN}(ref native_string_map_t map);
+    public static extern void {STRING_MAP_FREE_FN}(ref native_string_map_t map);
 
     /// <summary>Reads an owned C string and frees it.</summary>
-    internal static string? ConsumeString(IntPtr value)
+    public static string? ConsumeString(IntPtr value)
     {{
         if (value == IntPtr.Zero)
         {{
@@ -123,7 +209,7 @@ internal static partial class Interop
     }}
 
     /// <summary>Reads an owned C string list and frees it.</summary>
-    internal static string[] ConsumeStringList(ref native_string_list_t list)
+    public static string[] ConsumeStringList(ref native_string_list_t list)
     {{
         var count = list.items == IntPtr.Zero ? 0 : checked((int)list.count.Value);
         var items = new string[count];
@@ -137,7 +223,7 @@ internal static partial class Interop
     }}
 
     /// <summary>Reads an owned C string map and frees it.</summary>
-    internal static Dictionary<string, string> ConsumeStringMap(ref native_string_map_t map)
+    public static Dictionary<string, string> ConsumeStringMap(ref native_string_map_t map)
     {{
         var count = map.keys == IntPtr.Zero || map.values == IntPtr.Zero
             ? 0
@@ -159,7 +245,7 @@ internal static partial class Interop
     }}
 
     /// <summary>Copies strings into unmanaged UTF-8 buffers.</summary>
-    internal static IntPtr[] AllocUtf8Array(IReadOnlyList<string> values)
+    public static IntPtr[] AllocUtf8Array(IReadOnlyList<string> values)
     {{
         var ptrs = new IntPtr[values.Count];
         for (var i = 0; i < values.Count; i++)
@@ -170,14 +256,14 @@ internal static partial class Interop
     }}
 
     /// <summary>Copies a pointer array into one unmanaged block.</summary>
-    internal static IntPtr AllocPointerArray(IntPtr[] values)
+    public static IntPtr AllocPointerArray(IntPtr[] values)
     {{
         var block = Marshal.AllocHGlobal(IntPtr.Size * Math.Max(values.Length, 1));
         Marshal.Copy(values, 0, block, values.Length);
         return block;
     }}
 
-    internal static void FreeUtf8Array(IntPtr[] values)
+    public static void FreeUtf8Array(IntPtr[] values)
     {{
         foreach (var ptr in values)
         {{
@@ -192,90 +278,46 @@ internal static partial class Interop
     .unwrap();
 
     GeneratedFile {
-        path: csharp_out.join("Support.cs"),
+        path: csharp_src
+            .join(RAW_NAMESPACE)
+            .join("generated")
+            .join("Support.cs"),
         contents: out,
     }
 }
 
-fn banner(out: &mut String) {
-    writeln!(out, "// AUTO-GENERATED. DO NOT EDIT.").unwrap();
-    writeln!(
-        out,
-        "// Any manual changes WILL BE LOST when this file is regenerated."
-    )
-    .unwrap();
-    writeln!(out, "#nullable enable").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "using System;").unwrap();
-    writeln!(out, "using System.Collections.Generic;").unwrap();
-    writeln!(out, "using System.Runtime.InteropServices;").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "namespace NativeAPI;").unwrap();
-    writeln!(out).unwrap();
-}
-
-fn generate_csharp(api: &Api, header: &Header, prefix: &str) -> String {
-    let mut out = String::new();
-    let mut ctx = FileCtx::default();
-    banner(&mut out);
-
+fn generate_header(ctx: &mut Ctx, api: &Api, header: &Header, prefix: &str) {
     for item in &header.enums {
-        generate_enum(&mut out, item);
+        generate_enum(ctx, item);
     }
 
     for item in &header.structs {
-        generate_struct(&mut out, &mut ctx, item, prefix);
+        generate_struct(ctx, item, prefix);
     }
 
     for group in &header.events {
-        generate_event(&mut out, &mut ctx, group, prefix);
+        generate_event(ctx, group, prefix);
     }
 
     let listed = listed_classes(api);
     for class in &header.classes {
         if listed.contains(&class.name) {
-            generate_list_struct(&mut out, &mut ctx, &class.name, prefix);
+            generate_list_struct(ctx, &class.name, prefix);
         }
         if class.is_instance() {
-            generate_handle_class(&mut out, &mut ctx, api, header, class, prefix);
+            generate_handle_class(ctx, api, class, prefix);
         } else {
-            generate_singleton_class(&mut out, &mut ctx, api, header, class, prefix);
+            generate_singleton_class(ctx, api, class, prefix);
         }
     }
-
-    for signature in ctx.delegates.values() {
-        writeln!(out, "{signature}").unwrap();
-        writeln!(out).unwrap();
-    }
-
-    if !ctx.externs.is_empty() {
-        writeln!(out, "internal static partial class Interop").unwrap();
-        writeln!(out, "{{").unwrap();
-        let mut first = true;
-        for decl in &ctx.externs {
-            if !first {
-                writeln!(out).unwrap();
-            }
-            first = false;
-            writeln!(
-                out,
-                "    [DllImport(Libraries.NativeApi, CallingConvention = CallingConvention.Cdecl)]"
-            )
-            .unwrap();
-            writeln!(out, "    {decl}").unwrap();
-        }
-        writeln!(out, "}}").unwrap();
-        writeln!(out).unwrap();
-    }
-
-    out
 }
 
 // ---------------------------------------------------------------------------
 // Enums, structs, events
 // ---------------------------------------------------------------------------
 
-fn generate_enum(out: &mut String, item: &codegen_shared::ir::Enum) {
+fn generate_enum(ctx: &mut Ctx, item: &codegen_shared::ir::Enum) {
+    let out = &mut ctx.public;
     writeln!(out, "public enum {}", item.name).unwrap();
     writeln!(out, "{{").unwrap();
     for variant in &item.variants {
@@ -285,38 +327,52 @@ fn generate_enum(out: &mut String, item: &codegen_shared::ir::Enum) {
     writeln!(out).unwrap();
 }
 
-fn generate_struct(out: &mut String, ctx: &mut FileCtx, item: &Struct, prefix: &str) {
+fn generate_struct(ctx: &mut Ctx, item: &Struct, prefix: &str) {
     let c_ty = c_type_name(prefix, &item.name);
 
     // Raw C mirror.
-    writeln!(out, "[StructLayout(LayoutKind.Sequential)]").unwrap();
-    writeln!(out, "internal struct {c_ty}").unwrap();
-    writeln!(out, "{{").unwrap();
+    let raw_out = &mut ctx.raw;
+    writeln!(raw_out, "[StructLayout(LayoutKind.Sequential)]").unwrap();
+    writeln!(raw_out, "public struct {c_ty}").unwrap();
+    writeln!(raw_out, "{{").unwrap();
     for field in &item.fields {
         let raw_name = field.name.to_snake_case();
         match field.ty.unwrap_optional() {
-            TypeRef::Callback { params } => {
-                let delegate = struct_callback_delegate(ctx, item, field, params, prefix);
-                // Marshalled as a bare function pointer plus its context slot.
-                let _ = delegate;
-                writeln!(out, "    internal IntPtr {raw_name};").unwrap();
+            TypeRef::Callback { .. } => {
+                writeln!(raw_out, "    public IntPtr {raw_name};").unwrap();
                 writeln!(
-                    out,
-                    "    internal IntPtr {};",
+                    raw_out,
+                    "    public IntPtr {};",
                     codegen_shared::naming::c_user_data_param(&field.name)
                 )
                 .unwrap();
             }
             other => {
-                writeln!(out, "    internal {} {raw_name};", cs_raw_field_type(other, prefix))
+                writeln!(raw_out, "    public {} {raw_name};", cs_raw_field_type(other, prefix))
                     .unwrap();
             }
         }
     }
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    writeln!(raw_out, "}}").unwrap();
+    writeln!(raw_out).unwrap();
+
+    // Callback fields need their delegate types in the raw layer.
+    for field in &item.fields {
+        if let TypeRef::Callback { params } = field.ty.unwrap_optional() {
+            struct_callback_delegate(&mut ctx.delegates, item, field, params, prefix);
+        }
+    }
+    if struct_has_owned_fields(item) {
+        // The matching C free lives with the struct definition so every file
+        // that returns this struct shares one extern declaration.
+        let free = c_free_symbol(prefix, &item.name);
+        ctx.externs
+            .insert(format!("public static extern void {free}(ref {c_ty} value);"));
+    }
 
     // Public form.
+    let delegates = &mut ctx.delegates;
+    let out = &mut ctx.public;
     writeln!(out, "public struct {}", item.name).unwrap();
     writeln!(out, "{{").unwrap();
     for field in &item.fields {
@@ -362,7 +418,7 @@ fn generate_struct(out: &mut String, ctx: &mut FileCtx, item: &Struct, prefix: &
         let value = match field.ty.unwrap_optional() {
             TypeRef::Bool => format!("{raw} != 0"),
             TypeRef::String | TypeRef::CString => format!("Marshal.PtrToStringUTF8({raw})"),
-            TypeRef::Enum { .. } => raw,
+            TypeRef::Enum { name, .. } => format!("({name}){raw}"),
             TypeRef::Struct { name, .. } => format!("{name}.FromRaw(in {raw})"),
             TypeRef::Callback { .. } => "null".to_string(),
             TypeRef::Int { name } if int_needs_conv(name) => int_from_raw(name, &raw),
@@ -392,11 +448,15 @@ fn generate_struct(out: &mut String, ctx: &mut FileCtx, item: &Struct, prefix: &
                 )
                 .unwrap();
             }
+            TypeRef::Enum { .. } => {
+                writeln!(out, "        raw.{raw} = (int){name};").unwrap();
+            }
             TypeRef::Struct { .. } => {
                 writeln!(out, "        raw.{raw} = {name}.ToRaw();").unwrap();
             }
             TypeRef::Callback { params } => {
-                let delegate = struct_callback_delegate(ctx, item, field, params, prefix);
+                let delegate =
+                    struct_callback_delegate(delegates, item, field, params, prefix);
                 let user_data = codegen_shared::naming::c_user_data_param(&field.name);
                 writeln!(out, "        if ({name} is {{ }} {raw}Body)").unwrap();
                 writeln!(out, "        {{").unwrap();
@@ -426,11 +486,6 @@ fn generate_struct(out: &mut String, ctx: &mut FileCtx, item: &Struct, prefix: &
     writeln!(out, "    }}").unwrap();
 
     if struct_has_owned_fields(item) {
-        // The matching C free lives with the struct definition so every file
-        // that returns this struct shares one extern declaration.
-        let free = c_free_symbol(prefix, &item.name);
-        ctx.externs
-            .insert(format!("internal static extern void {free}(ref {c_ty} value);"));
         writeln!(out).unwrap();
         writeln!(out, "    internal static void ReleaseRaw(ref {c_ty} raw)").unwrap();
         writeln!(out, "    {{").unwrap();
@@ -450,7 +505,7 @@ fn generate_struct(out: &mut String, ctx: &mut FileCtx, item: &Struct, prefix: &
     writeln!(out).unwrap();
 }
 
-fn generate_event(out: &mut String, ctx: &mut FileCtx, group: &EventGroup, prefix: &str) {
+fn generate_event(ctx: &mut Ctx, group: &EventGroup, prefix: &str) {
     let raw_ty = c_type_name(prefix, &group.name);
     let union_variants: Vec<_> = group
         .variants
@@ -459,65 +514,67 @@ fn generate_event(out: &mut String, ctx: &mut FileCtx, group: &EventGroup, prefi
         .collect();
 
     // Raw C mirror: tag, common fields, then a union of the variant payloads.
-    writeln!(out, "[StructLayout(LayoutKind.Sequential)]").unwrap();
-    writeln!(out, "internal struct {raw_ty}").unwrap();
-    writeln!(out, "{{").unwrap();
-    writeln!(out, "    internal int type;").unwrap();
+    let raw_out = &mut ctx.raw;
+    writeln!(raw_out, "[StructLayout(LayoutKind.Sequential)]").unwrap();
+    writeln!(raw_out, "public struct {raw_ty}").unwrap();
+    writeln!(raw_out, "{{").unwrap();
+    writeln!(raw_out, "    public int type;").unwrap();
     for field in &group.common {
         writeln!(
-            out,
-            "    internal {} {};",
+            raw_out,
+            "    public {} {};",
             cs_raw_field_type(field.ty.unwrap_optional(), prefix),
             field.name.to_snake_case()
         )
         .unwrap();
     }
     if !union_variants.is_empty() {
-        writeln!(out, "    internal DataUnion data;").unwrap();
-        writeln!(out).unwrap();
-        writeln!(out, "    [StructLayout(LayoutKind.Explicit)]").unwrap();
-        writeln!(out, "    internal struct DataUnion").unwrap();
-        writeln!(out, "    {{").unwrap();
+        writeln!(raw_out, "    public DataUnion data;").unwrap();
+        writeln!(raw_out).unwrap();
+        writeln!(raw_out, "    [StructLayout(LayoutKind.Explicit)]").unwrap();
+        writeln!(raw_out, "    public struct DataUnion").unwrap();
+        writeln!(raw_out, "    {{").unwrap();
         for variant in &union_variants {
             writeln!(
-                out,
-                "        [FieldOffset(0)] internal {}Data {};",
+                raw_out,
+                "        [FieldOffset(0)] public {}Data {};",
                 pascal(&variant.discriminant),
                 codegen_shared::naming::c_event_variant_field(&variant.discriminant)
             )
             .unwrap();
         }
-        writeln!(out, "    }}").unwrap();
+        writeln!(raw_out, "    }}").unwrap();
         for variant in &union_variants {
-            writeln!(out).unwrap();
-            writeln!(out, "    [StructLayout(LayoutKind.Sequential)]").unwrap();
-            writeln!(out, "    internal struct {}Data", pascal(&variant.discriminant)).unwrap();
-            writeln!(out, "    {{").unwrap();
+            writeln!(raw_out).unwrap();
+            writeln!(raw_out, "    [StructLayout(LayoutKind.Sequential)]").unwrap();
+            writeln!(raw_out, "    public struct {}Data", pascal(&variant.discriminant)).unwrap();
+            writeln!(raw_out, "    {{").unwrap();
             for field in &variant.fields {
                 writeln!(
-                    out,
-                    "        internal {} {};",
+                    raw_out,
+                    "        public {} {};",
                     cs_raw_field_type(field.ty.unwrap_optional(), prefix),
                     field.name.to_snake_case()
                 )
                 .unwrap();
             }
-            writeln!(out, "    }}").unwrap();
+            writeln!(raw_out, "    }}").unwrap();
         }
     }
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    writeln!(raw_out, "}}").unwrap();
+    writeln!(raw_out).unwrap();
 
     // The delegate every listener registration for this group goes through.
     ctx.delegates.insert(
         format!("{}NativeCallback", group.name),
         format!(
-            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\ninternal delegate void {}NativeCallback(IntPtr evt, IntPtr userData);",
+            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\npublic delegate void {}NativeCallback(IntPtr evt, IntPtr userData);",
             group.name
         ),
     );
 
     // Public form: one record per concrete event.
+    let out = &mut ctx.public;
     writeln!(out, "/// <summary>One {}, in its concrete form.</summary>", group.name).unwrap();
     writeln!(out, "public abstract record {}", group.name).unwrap();
     writeln!(out, "{{").unwrap();
@@ -601,6 +658,7 @@ fn generate_event(out: &mut String, ctx: &mut FileCtx, group: &EventGroup, prefi
 fn cs_event_field_expr(ty: &TypeRef, access: &str) -> String {
     match ty.unwrap_optional() {
         TypeRef::String | TypeRef::CString => format!("Marshal.PtrToStringUTF8({access})"),
+        TypeRef::Enum { name, .. } => format!("({name}){access}"),
         TypeRef::Struct { name, .. } => format!("{name}.FromRaw(in {access})"),
         TypeRef::Object { name, .. } => format!("new {name}({access}, ownsHandle: false)"),
         TypeRef::Int { name } if int_needs_conv(name) => int_from_raw(name, access),
@@ -616,21 +674,22 @@ fn cs_event_field_type(ty: &TypeRef) -> String {
     }
 }
 
-fn generate_list_struct(out: &mut String, ctx: &mut FileCtx, class_name: &str, prefix: &str) {
+fn generate_list_struct(ctx: &mut Ctx, class_name: &str, prefix: &str) {
     let list_ty = c_list_type_name(prefix, class_name);
     let field = c_list_field(class_name);
-    writeln!(out, "[StructLayout(LayoutKind.Sequential)]").unwrap();
-    writeln!(out, "internal struct {list_ty}").unwrap();
-    writeln!(out, "{{").unwrap();
-    writeln!(out, "    internal IntPtr {field};").unwrap();
-    writeln!(out, "    internal CLong count;").unwrap();
-    writeln!(out, "}}").unwrap();
-    writeln!(out).unwrap();
+    let raw_out = &mut ctx.raw;
+    writeln!(raw_out, "[StructLayout(LayoutKind.Sequential)]").unwrap();
+    writeln!(raw_out, "public struct {list_ty}").unwrap();
+    writeln!(raw_out, "{{").unwrap();
+    writeln!(raw_out, "    public IntPtr {field};").unwrap();
+    writeln!(raw_out, "    public CLong count;").unwrap();
+    writeln!(raw_out, "}}").unwrap();
+    writeln!(raw_out).unwrap();
     // The release extern lives with the list struct so every file that returns
     // this list shares one declaration.
     let release = c_list_release_symbol(prefix, class_name);
     ctx.externs.insert(format!(
-        "internal static extern void {release}(ref {list_ty} list);"
+        "public static extern void {release}(ref {list_ty} list);"
     ));
 }
 
@@ -638,65 +697,66 @@ fn generate_list_struct(out: &mut String, ctx: &mut FileCtx, class_name: &str, p
 // Classes
 // ---------------------------------------------------------------------------
 
-fn generate_handle_class(
-    out: &mut String,
-    ctx: &mut FileCtx,
-    api: &Api,
-    header: &Header,
-    class: &Class,
-    prefix: &str,
-) {
+fn generate_handle_class(ctx: &mut Ctx, api: &Api, class: &Class, prefix: &str) {
     let free_symbol = c_free_symbol(prefix, &class.name);
     ctx.externs
-        .insert(format!("internal static extern void {free_symbol}(ulong handle);"));
+        .insert(format!("public static extern void {free_symbol}(ulong handle);"));
 
-    writeln!(out, "/// <summary>Owned handle to a native {}.</summary>", class.name).unwrap();
-    writeln!(out, "public sealed partial class {} : IDisposable", class.name).unwrap();
-    writeln!(out, "{{").unwrap();
-    writeln!(out, "    public ulong NativeHandle {{ get; private set; }}").unwrap();
-    writeln!(out, "    private readonly bool _ownsHandle;").unwrap();
-    writeln!(out).unwrap();
-    writeln!(
-        out,
-        "    public {}(ulong nativeHandle, bool ownsHandle = true)",
-        class.name
-    )
-    .unwrap();
-    writeln!(out, "    {{").unwrap();
-    writeln!(out, "        NativeHandle = nativeHandle;").unwrap();
-    writeln!(out, "        _ownsHandle = ownsHandle;").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "    ~{}() => ReleaseHandle();", class.name).unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "    public void Dispose()").unwrap();
-    writeln!(out, "    {{").unwrap();
-    writeln!(out, "        ReleaseHandle();").unwrap();
-    writeln!(out, "        GC.SuppressFinalize(this);").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "    private void ReleaseHandle()").unwrap();
-    writeln!(out, "    {{").unwrap();
-    writeln!(out, "        if (_ownsHandle && NativeHandle != 0)").unwrap();
-    writeln!(out, "        {{").unwrap();
-    writeln!(out, "            Interop.{free_symbol}(NativeHandle);").unwrap();
-    writeln!(out, "            NativeHandle = 0;").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out).unwrap();
+    let native_object_symbol = class.native_object.then(|| {
+        let symbol = c_native_object_symbol(prefix, &class.name);
+        ctx.externs
+            .insert(format!("public static extern IntPtr {symbol}(ulong handle);"));
+        symbol
+    });
+
+    {
+        let out = &mut ctx.public;
+        writeln!(out, "/// <summary>Owned handle to a native {}.</summary>", class.name).unwrap();
+        writeln!(out, "public sealed partial class {} : IDisposable", class.name).unwrap();
+        writeln!(out, "{{").unwrap();
+        writeln!(out, "    public ulong NativeHandle {{ get; private set; }}").unwrap();
+        writeln!(out, "    private readonly bool _ownsHandle;").unwrap();
+        writeln!(out).unwrap();
+        writeln!(
+            out,
+            "    public {}(ulong nativeHandle, bool ownsHandle = true)",
+            class.name
+        )
+        .unwrap();
+        writeln!(out, "    {{").unwrap();
+        writeln!(out, "        NativeHandle = nativeHandle;").unwrap();
+        writeln!(out, "        _ownsHandle = ownsHandle;").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "    ~{}() => ReleaseHandle();", class.name).unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "    public void Dispose()").unwrap();
+        writeln!(out, "    {{").unwrap();
+        writeln!(out, "        ReleaseHandle();").unwrap();
+        writeln!(out, "        GC.SuppressFinalize(this);").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "    private void ReleaseHandle()").unwrap();
+        writeln!(out, "    {{").unwrap();
+        writeln!(out, "        if (_ownsHandle && NativeHandle != 0)").unwrap();
+        writeln!(out, "        {{").unwrap();
+        writeln!(out, "            Interop.{free_symbol}(NativeHandle);").unwrap();
+        writeln!(out, "            NativeHandle = 0;").unwrap();
+        writeln!(out, "        }}").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out).unwrap();
+    }
 
     for ctor in &class.constructors {
-        generate_constructor(out, ctx, api, class, ctor, prefix);
+        generate_constructor(ctx, api, class, ctor, prefix);
     }
 
     for method in &class.methods {
-        generate_method(out, ctx, api, header, class, method, prefix);
+        generate_method(ctx, api, class, method, prefix);
     }
 
-    if class.native_object {
-        let symbol = c_native_object_symbol(prefix, &class.name);
-        ctx.externs
-            .insert(format!("internal static extern IntPtr {symbol}(ulong handle);"));
+    if let Some(symbol) = native_object_symbol {
+        let out = &mut ctx.public;
         writeln!(
             out,
             "    /// <summary>Platform-specific native object behind this handle.</summary>"
@@ -706,62 +766,53 @@ fn generate_handle_class(
         writeln!(out).unwrap();
     }
 
-    generate_listener(out, ctx, api, class, prefix);
+    generate_listener(ctx, api, class, prefix);
 
+    let out = &mut ctx.public;
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
 
-fn generate_singleton_class(
-    out: &mut String,
-    ctx: &mut FileCtx,
-    api: &Api,
-    header: &Header,
-    class: &Class,
-    prefix: &str,
-) {
-    writeln!(out, "public sealed partial class {}", class.name).unwrap();
-    writeln!(out, "{{").unwrap();
-    writeln!(
-        out,
-        "    /// <summary>The shared instance backed by the native singleton.</summary>"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    public static {} Shared {{ get; }} = new {}();",
-        class.name, class.name
-    )
-    .unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "    private {}() {{ }}", class.name).unwrap();
-    writeln!(out).unwrap();
-
-    for method in &class.methods {
-        generate_method(out, ctx, api, header, class, method, prefix);
+fn generate_singleton_class(ctx: &mut Ctx, api: &Api, class: &Class, prefix: &str) {
+    {
+        let out = &mut ctx.public;
+        writeln!(out, "public sealed partial class {}", class.name).unwrap();
+        writeln!(out, "{{").unwrap();
+        writeln!(
+            out,
+            "    /// <summary>The shared instance backed by the native singleton.</summary>"
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "    public static {} Shared {{ get; }} = new {}();",
+            class.name, class.name
+        )
+        .unwrap();
+        writeln!(out).unwrap();
+        writeln!(out, "    private {}() {{ }}", class.name).unwrap();
+        writeln!(out).unwrap();
     }
 
-    generate_listener(out, ctx, api, class, prefix);
+    for method in &class.methods {
+        generate_method(ctx, api, class, method, prefix);
+    }
 
+    generate_listener(ctx, api, class, prefix);
+
+    let out = &mut ctx.public;
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
 
-fn generate_constructor(
-    out: &mut String,
-    ctx: &mut FileCtx,
-    api: &Api,
-    class: &Class,
-    ctor: &Constructor,
-    prefix: &str,
-) {
+fn generate_constructor(ctx: &mut Ctx, api: &Api, class: &Class, ctor: &Constructor, prefix: &str) {
     let label = match constructor_suffix(class, ctor) {
         Some(suffix) => format!("Create{}", pascal(&suffix)),
         None => "Create".to_string(),
     };
     let symbol = c_constructor_symbol(prefix, class, ctor);
     let owner = format!("{}.{label}", class.name);
-    let delegates = ctx_delegates(ctx, &owner, &ctor.params, prefix);
+    let delegates = param_delegates(&mut ctx.delegates, &owner, &ctor.params, prefix);
     ctx.externs.insert(extern_decl(
         &symbol,
         &TypeRef::Object {
@@ -771,10 +822,21 @@ fn generate_constructor(
         },
         None,
         &ctor.params,
-        delegates,
+        &delegates,
         prefix,
     ));
 
+    let mut body = String::new();
+    let bindings = render_param_bindings(
+        &mut body,
+        &mut ctx.delegates,
+        &owner,
+        &ctor.params,
+        prefix,
+        "        ",
+    );
+
+    let out = &mut ctx.public;
     writeln!(
         out,
         "    /// <summary>Creates a new {}; returns null if the native side failed.</summary>",
@@ -789,7 +851,7 @@ fn generate_constructor(
     )
     .unwrap();
     writeln!(out, "    {{").unwrap();
-    let bindings = render_param_bindings(out, ctx, api, &owner, &ctor.params, prefix, "        ");
+    out.push_str(&body);
     writeln!(
         out,
         "        var handle = Interop.{symbol}({});",
@@ -802,27 +864,19 @@ fn generate_constructor(
     writeln!(out).unwrap();
 }
 
-fn generate_method(
-    out: &mut String,
-    ctx: &mut FileCtx,
-    api: &Api,
-    header: &Header,
-    class: &Class,
-    method: &Method,
-    prefix: &str,
-) {
+fn generate_method(ctx: &mut Ctx, api: &Api, class: &Class, method: &Method, prefix: &str) {
     let instance = class.is_instance() && !method.is_static;
     let name = cs_method_name(class, method);
     let symbol = c_method_symbol(prefix, class, method);
     let owner = format!("{}.{name}", class.name);
 
-    let delegates = ctx_delegates(ctx, &owner, &method.params, prefix);
+    let delegates = param_delegates(&mut ctx.delegates, &owner, &method.params, prefix);
     ctx.externs.insert(extern_decl(
         &symbol,
         &method.return_type,
         instance.then_some("ulong self"),
         &method.params,
-        delegates,
+        &delegates,
         prefix,
     ));
 
@@ -831,7 +885,19 @@ fn generate_method(
     // would collide with the enclosing type.
     let accessor = is_binding_accessor(class, method) && method.params.is_empty();
     let property = accessor && name != class.name;
+    let indent = if property { "            " } else { "        " };
 
+    let mut body = String::new();
+    let bindings = render_param_bindings(
+        &mut body,
+        &mut ctx.delegates,
+        &owner,
+        &method.params,
+        prefix,
+        indent,
+    );
+
+    let out = &mut ctx.public;
     if property {
         writeln!(out, "    public {return_type} {name}").unwrap();
         writeln!(out, "    {{").unwrap();
@@ -851,9 +917,8 @@ fn generate_method(
         .unwrap();
         writeln!(out, "    {{").unwrap();
     }
-    let indent = if property { "            " } else { "        " };
 
-    let bindings = render_param_bindings(out, ctx, api, &owner, &method.params, prefix, indent);
+    out.push_str(&body);
     let receiver = instance.then(|| "NativeHandle".to_string());
     let args = call_args(&method.params, receiver);
 
@@ -863,7 +928,7 @@ fn generate_method(
     } else {
         writeln!(out, "{indent}var rawResult = Interop.{symbol}({args});").unwrap();
         render_param_cleanup(out, api, &method.params, &bindings, indent);
-        render_return(out, api, header, &method.return_type, prefix, indent);
+        render_return(out, api, &method.return_type, prefix, indent);
     }
 
     if property {
@@ -875,7 +940,7 @@ fn generate_method(
     writeln!(out).unwrap();
 }
 
-fn generate_listener(out: &mut String, ctx: &mut FileCtx, api: &Api, class: &Class, prefix: &str) {
+fn generate_listener(ctx: &mut Ctx, api: &Api, class: &Class, prefix: &str) {
     let Some(group) = emitted_group(api, class) else {
         return;
     };
@@ -888,12 +953,13 @@ fn generate_listener(out: &mut String, ctx: &mut FileCtx, api: &Api, class: &Cla
     let self_arg = if instance { "NativeHandle, " } else { "" };
 
     ctx.externs.insert(format!(
-        "internal static extern ulong {add_symbol}({self_param}{delegate} callback, IntPtr userData);"
+        "public static extern ulong {add_symbol}({self_param}{delegate} callback, IntPtr userData);"
     ));
     ctx.externs.insert(format!(
-        "[return: MarshalAs(UnmanagedType.I1)]\n    internal static extern bool {remove_symbol}({self_param}ulong listenerId);"
+        "[return: MarshalAs(UnmanagedType.I1)]\n    public static extern bool {remove_symbol}({self_param}ulong listenerId);"
     ));
 
+    let out = &mut ctx.public;
     writeln!(
         out,
         "    /// <summary>Registers <paramref name=\"callback\"/> for every {} this {} emits.</summary>",
@@ -979,8 +1045,8 @@ fn emitted_group<'a>(api: &'a Api, class: &Class) -> Option<&'a EventGroup> {
 
 /// Registers (and names) the delegate types for every callback parameter in
 /// `params`, returning name-by-parameter for the extern declaration.
-fn ctx_delegates(
-    ctx: &mut FileCtx,
+fn param_delegates(
+    delegates: &mut BTreeMap<String, String>,
     owner: &str,
     params: &[Param],
     prefix: &str,
@@ -988,41 +1054,46 @@ fn ctx_delegates(
     let mut map = BTreeMap::new();
     for param in params {
         if let TypeRef::Callback { params: args } = param.ty.unwrap_optional() {
-            let name = format!(
-                "{}{}NativeCallback",
-                owner.replace('.', ""),
-                pascal(&param.name)
-            );
-            register_delegate(ctx, &name, args, prefix);
+            let name = delegate_name(owner, &param.name);
+            register_delegate(delegates, &name, args, prefix);
             map.insert(param.name.clone(), name);
         }
     }
     map
 }
 
+fn delegate_name(owner: &str, param: &str) -> String {
+    format!("{}{}NativeCallback", owner.replace('.', ""), pascal(param))
+}
+
 fn struct_callback_delegate(
-    ctx: &mut FileCtx,
+    delegates: &mut BTreeMap<String, String>,
     item: &Struct,
     field: &codegen_shared::ir::Field,
     args: &[TypeRef],
     prefix: &str,
 ) -> String {
     let name = format!("{}{}NativeCallback", item.name, pascal(&field.name));
-    register_delegate(ctx, &name, args, prefix);
+    register_delegate(delegates, &name, args, prefix);
     name
 }
 
-fn register_delegate(ctx: &mut FileCtx, name: &str, args: &[TypeRef], prefix: &str) {
+fn register_delegate(
+    delegates: &mut BTreeMap<String, String>,
+    name: &str,
+    args: &[TypeRef],
+    prefix: &str,
+) {
     let mut params: Vec<String> = args
         .iter()
         .enumerate()
         .map(|(index, ty)| format!("{} arg{index}", cs_callback_c_type(ty, prefix)))
         .collect();
     params.push("IntPtr userData".to_string());
-    ctx.delegates.insert(
+    delegates.insert(
         name.to_string(),
         format!(
-            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\ninternal delegate void {name}({});",
+            "[UnmanagedFunctionPointer(CallingConvention.Cdecl)]\npublic delegate void {name}({});",
             params.join(", ")
         ),
     );
@@ -1038,7 +1109,7 @@ fn cs_callback_c_type(ty: &TypeRef, prefix: &str) -> String {
         TypeRef::Alias { underlying, .. } => cs_callback_c_type(underlying, prefix),
         TypeRef::Int { name } => cs_raw_int(name).to_string(),
         TypeRef::Float { name } => cs_float(name).to_string(),
-        TypeRef::Enum { name, .. } => name.clone(),
+        TypeRef::Enum { .. } => "int".to_string(),
         _ => "IntPtr".to_string(),
     }
 }
@@ -1062,6 +1133,7 @@ fn trampoline_lambda(args: &[TypeRef], body: &str) -> String {
 fn cs_callback_arg_expr(ty: &TypeRef, access: &str) -> String {
     match ty {
         TypeRef::String | TypeRef::CString => format!("Marshal.PtrToStringUTF8({access})"),
+        TypeRef::Enum { name, .. } => format!("({name}){access}"),
         TypeRef::Struct { name, .. } => format!("{name}.FromRaw(in {access})"),
         TypeRef::Object { name, .. } => {
             format!("{access} == 0 ? null : new {name}({access}, ownsHandle: false)")
@@ -1081,7 +1153,7 @@ fn extern_decl(
     return_type: &TypeRef,
     receiver: Option<&str>,
     params: &[Param],
-    delegates: BTreeMap<String, String>,
+    delegates: &BTreeMap<String, String>,
     prefix: &str,
 ) -> String {
     let mut parts: Vec<String> = receiver.map(str::to_string).into_iter().collect();
@@ -1096,7 +1168,7 @@ fn extern_decl(
             TypeRef::Float { name: float } => {
                 parts.push(format!("{} {name}", cs_float(float)))
             }
-            TypeRef::Enum { name: ty, .. } => parts.push(format!("{ty} {name}")),
+            TypeRef::Enum { .. } => parts.push(format!("int {name}")),
             TypeRef::Struct { name: ty, .. } => {
                 if matches!(param.ty, TypeRef::Optional { .. }) {
                     parts.push(format!("IntPtr {name}"));
@@ -1133,7 +1205,7 @@ fn extern_decl(
 
     let (attr, ret) = extern_return(return_type, prefix);
     format!(
-        "{attr}internal static extern {ret} {symbol}({});",
+        "{attr}public static extern {ret} {symbol}({});",
         parts.join(", ")
     )
 }
@@ -1148,7 +1220,7 @@ fn extern_return(ty: &TypeRef, prefix: &str) -> (String, String) {
         TypeRef::String | TypeRef::CString => (String::new(), "IntPtr".to_string()),
         TypeRef::Int { name } => (String::new(), cs_raw_int(name).to_string()),
         TypeRef::Float { name } => (String::new(), cs_float(name).to_string()),
-        TypeRef::Enum { name, .. } => (String::new(), name.clone()),
+        TypeRef::Enum { .. } => (String::new(), "int".to_string()),
         TypeRef::Struct { name, .. } => (String::new(), c_type_name(prefix, name)),
         TypeRef::Object { .. } => (String::new(), "ulong".to_string()),
         TypeRef::Alias { underlying, .. } => extern_return(underlying, prefix),
@@ -1237,8 +1309,7 @@ fn cs_action_type(params: &[TypeRef]) -> String {
 /// Locals the call needs; returns what each parameter left behind.
 fn render_param_bindings(
     out: &mut String,
-    ctx: &mut FileCtx,
-    api: &Api,
+    delegates: &mut BTreeMap<String, String>,
     owner: &str,
     params: &[Param],
     prefix: &str,
@@ -1296,7 +1367,8 @@ fn render_param_bindings(
                 Binding::StringMap
             }
             TypeRef::Callback { params: args } => {
-                let delegate = ctx_delegate_name(ctx, owner, &param.name, args, prefix);
+                let delegate = delegate_name(owner, &param.name);
+                register_delegate(delegates, &delegate, args, prefix);
                 writeln!(
                     out,
                     "{indent}var native{local} = CallbackKeeper.Retain<{delegate}>({});",
@@ -1326,7 +1398,8 @@ fn render_param_bindings(
                     Binding::StructPtr
                 }
                 TypeRef::Callback { params: args } => {
-                    let delegate = ctx_delegate_name(ctx, owner, &param.name, args, prefix);
+                    let delegate = delegate_name(owner, &param.name);
+                    register_delegate(delegates, &delegate, args, prefix);
                     writeln!(out, "{indent}{delegate}? native{local} = null;").unwrap();
                     writeln!(out, "{indent}if ({name} is {{ }} body{local})").unwrap();
                     writeln!(out, "{indent}{{").unwrap();
@@ -1345,20 +1418,7 @@ fn render_param_bindings(
         };
         bindings.push(binding);
     }
-    let _ = api;
     bindings
-}
-
-fn ctx_delegate_name(
-    ctx: &mut FileCtx,
-    owner: &str,
-    param: &str,
-    args: &[TypeRef],
-    prefix: &str,
-) -> String {
-    let name = format!("{}{}NativeCallback", owner.replace('.', ""), pascal(param));
-    register_delegate(ctx, &name, args, prefix);
-    name
 }
 
 fn render_param_cleanup(
@@ -1373,7 +1433,7 @@ fn render_param_cleanup(
         match binding {
             Binding::StructRaw => {
                 if let TypeRef::Struct { name, .. } = param.ty.unwrap_optional() {
-                    if struct_owns_memory_api(api, name) {
+                    if struct_owns_memory(api, name) {
                         writeln!(out, "{indent}{name}.ReleaseRaw(ref raw{local});").unwrap();
                     }
                 }
@@ -1382,15 +1442,14 @@ fn render_param_cleanup(
                 writeln!(out, "{indent}if (ptr{local} != IntPtr.Zero)").unwrap();
                 writeln!(out, "{indent}{{").unwrap();
                 if let TypeRef::Struct { name, .. } = param.ty.unwrap_optional() {
-                    if struct_owns_memory_api(api, name) {
-                        let c_ty_var = format!("owned{local}");
+                    if struct_owns_memory(api, name) {
                         writeln!(
                             out,
-                            "{indent}    var {c_ty_var} = Marshal.PtrToStructure<{}>(ptr{local});",
-                            struct_c_type_from_api(api, name)
+                            "{indent}    var owned{local} = Marshal.PtrToStructure<{}>(ptr{local});",
+                            c_type_name("native_", name)
                         )
                         .unwrap();
-                        writeln!(out, "{indent}    {name}.ReleaseRaw(ref {c_ty_var});").unwrap();
+                        writeln!(out, "{indent}    {name}.ReleaseRaw(ref owned{local});").unwrap();
                     }
                 }
                 writeln!(out, "{indent}    Marshal.FreeHGlobal(ptr{local});").unwrap();
@@ -1411,24 +1470,11 @@ fn render_param_cleanup(
     }
 }
 
-fn struct_owns_memory_api(api: &Api, name: &str) -> bool {
+fn struct_owns_memory(api: &Api, name: &str) -> bool {
     api.headers
         .iter()
         .flat_map(|header| header.structs.iter())
         .any(|item| item.name == name && struct_has_owned_fields(item))
-}
-
-fn struct_owns_memory(api: &Api, header: &Header, name: &str) -> bool {
-    header
-        .structs
-        .iter()
-        .chain(api.headers.iter().flat_map(|h| h.structs.iter()))
-        .any(|item| item.name == name && struct_has_owned_fields(item))
-}
-
-fn struct_c_type_from_api(api: &Api, name: &str) -> String {
-    let _ = api;
-    c_type_name("native_", name)
 }
 
 fn call_args(params: &[Param], receiver: Option<String>) -> String {
@@ -1442,6 +1488,7 @@ fn call_args(params: &[Param], receiver: Option<String>) -> String {
             }
             TypeRef::Object { .. } => args.push(format!("{name}.NativeHandle")),
             TypeRef::Struct { .. } => args.push(format!("raw{local}")),
+            TypeRef::Enum { .. } => args.push(format!("(int){name}")),
             TypeRef::Vector { .. } => args.push(format!("list{local}")),
             TypeRef::Map { .. } => args.push(format!("map{local}")),
             TypeRef::Callback { .. } => {
@@ -1473,21 +1520,14 @@ fn call_args(params: &[Param], receiver: Option<String>) -> String {
 }
 
 /// Converts `rawResult` into the public return value.
-fn render_return(
-    out: &mut String,
-    api: &Api,
-    header: &Header,
-    ty: &TypeRef,
-    prefix: &str,
-    indent: &str,
-) {
+fn render_return(out: &mut String, api: &Api, ty: &TypeRef, prefix: &str, indent: &str) {
     match ty {
         TypeRef::Void => {}
         TypeRef::String | TypeRef::CString => {
             writeln!(out, "{indent}return Interop.ConsumeString(rawResult);").unwrap();
         }
         TypeRef::Struct { name, .. } => {
-            if struct_owns_memory(api, header, name) {
+            if struct_owns_memory(api, name) {
                 writeln!(out, "{indent}var result = {name}.FromRaw(in rawResult);").unwrap();
                 writeln!(
                     out,
@@ -1500,8 +1540,8 @@ fn render_return(
                 writeln!(out, "{indent}return {name}.FromRaw(in rawResult);").unwrap();
             }
         }
-        TypeRef::Enum { .. } => {
-            writeln!(out, "{indent}return rawResult;").unwrap();
+        TypeRef::Enum { name, .. } => {
+            writeln!(out, "{indent}return ({name})rawResult;").unwrap();
         }
         TypeRef::Object { name, .. } => {
             writeln!(
@@ -1551,7 +1591,7 @@ fn render_return(
         TypeRef::Map { .. } => {
             writeln!(out, "{indent}return Interop.ConsumeStringMap(ref rawResult);").unwrap();
         }
-        TypeRef::Optional { inner } => render_return(out, api, header, inner, prefix, indent),
+        TypeRef::Optional { inner } => render_return(out, api, inner, prefix, indent),
         TypeRef::Int { name } if int_needs_conv(name) => {
             writeln!(out, "{indent}return {};", int_from_raw(name, "rawResult")).unwrap();
         }
@@ -1620,14 +1660,15 @@ fn cs_struct_field_type(ty: &TypeRef) -> String {
     }
 }
 
-/// The blittable mirror of a C struct field.
+/// The blittable mirror of a C struct field. Enums stay `int` here: the raw
+/// layer cannot depend on the public assembly that declares the C# enums.
 fn cs_raw_field_type(ty: &TypeRef, prefix: &str) -> String {
     match ty {
         TypeRef::Bool => "byte".to_string(),
         TypeRef::Int { name } => cs_raw_int(name).to_string(),
         TypeRef::Float { name } => cs_float(name).to_string(),
         TypeRef::String | TypeRef::CString => "IntPtr".to_string(),
-        TypeRef::Enum { name, .. } => name.clone(),
+        TypeRef::Enum { .. } => "int".to_string(),
         TypeRef::Struct { name, .. } => c_type_name(prefix, name),
         TypeRef::Object { .. } => "ulong".to_string(),
         TypeRef::Alias { underlying, .. } => cs_raw_field_type(underlying, prefix),
@@ -1710,7 +1751,7 @@ fn cs_ident(name: &str) -> String {
     if CSHARP_KEYWORDS.contains(&ident.as_str()) {
         format!("@{ident}")
     } else {
-        ident
+        format!("{ident}")
     }
 }
 
@@ -1743,5 +1784,3 @@ fn with_overload_suffix(base: String, class: &Class, method: &Method) -> String 
             .join("_and_")
     )
 }
-
-use heck::ToLowerCamelCase;
