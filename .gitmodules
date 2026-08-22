@@ -2,10 +2,6 @@
 	path = core
 	url = ../nativeapi.git
 	branch = main
-[submodule "codegen"]
-	path = tools/codegen
-	url = ../codegen.git
-	branch = main
 [submodule "nativeapi-flutter"]
 	path = bindings/nativeapi-flutter
 	url = ../nativeapi-flutter.git

@@ -1,13 +1,12 @@
 # libnativeapi workspace
 
-Aggregates all [libnativeapi](https://github.com/libnativeapi) repositories as git submodules, so cross-repo changes (core → codegen → bindings) can be made and tracked together.
+Aggregates all [libnativeapi](https://github.com/libnativeapi) repositories as git submodules, so cross-repo changes (core → codegen → bindings) can be made and tracked together. The binding code generator lives directly in this repo under `tools/codegen`.
 
 ## Repositories
 
 | Submodule | Description |
 | --- | --- |
 | [core](https://github.com/libnativeapi/nativeapi) | C++ core library (`nativeapi`) |
-| [tools/codegen](https://github.com/libnativeapi/codegen) | Binding code generator |
 | [bindings/nativeapi-flutter](https://github.com/libnativeapi/nativeapi-flutter) | Flutter binding |
 | [bindings/nativeapi-rust](https://github.com/libnativeapi/nativeapi-rust) | Rust binding |
 | [bindings/nativeapi-swift](https://github.com/libnativeapi/nativeapi-swift) | Swift binding |
@@ -24,6 +23,18 @@ Already cloned without `--recursive`?
 ```bash
 git submodule update --init
 ```
+
+## Code generation
+
+`tools/codegen` (in-repo, not a submodule) generates the C ABI and all language
+bindings from the C++ headers in `core/`. Run it via the wrapper script:
+
+```bash
+./codegen         # full run: C ABI, then all bindings
+./codegen check   # verify generated files are up to date (CI mode)
+```
+
+See [tools/codegen/README.md](tools/codegen/README.md) for details.
 
 ## Common tasks
 

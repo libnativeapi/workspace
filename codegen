@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Run the nativeapi code generators.
+
+Orchestrates the Rust generators in tools/codegen against the workspace layout:
+
+    ./codegen                    # full run: C ABI, then all bindings
+    ./codegen capi               # C ABI + umbrella header only
+    ./codegen bindings           # bindings only (parses headers, writes no C ABI)
+    ./codegen bindings --lang rust,swift
+    ./codegen check              # verify everything is up to date (CI mode)
+    ./codegen --dump-ir ir.json  # also keep the intermediate IR at this path
+
+The C ABI generator parses the C++ headers in core/ with libclang and emits an
+IR JSON; the bindings generator consumes that IR. Binding repos whose submodule
+is not initialized are skipped automatically.
+"""
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+WORKSPACE = Path(__file__).resolve().parent
+CORE = WORKSPACE / "core"
+CODEGEN = WORKSPACE / "tools" / "codegen"
+DEFAULT_IR = CODEGEN / "target" / "ir.json"
+
+# lang -> (cli flag of codegen-bindings, binding repo path)
+BINDINGS = {
+    "rust": ("--rust", WORKSPACE / "bindings" / "nativeapi-rust"),
+    "swift": ("--swift", WORKSPACE / "bindings" / "nativeapi-swift"),
+    "dart": ("--dart", WORKSPACE / "bindings" / "nativeapi-flutter"),
+}
+
+
+def run(binary: str, *extra: str) -> None:
+    cmd = [
+        "cargo", "run", "--quiet", "--release",
+        "--manifest-path", str(CODEGEN / "Cargo.toml"),
+        "-p", binary, "--", *extra,
+    ]
+    result = subprocess.run(cmd)
+    if result.returncode != 0:
+        sys.exit(result.returncode)
+
+
+def initialized(repo: Path) -> bool:
+    """An uninitialized submodule leaves an empty directory behind."""
+    return (repo / ".git").exists()
+
+
+def binding_flags(langs: list[str]) -> list[str]:
+    flags = []
+    for lang in langs:
+        flag, repo = BINDINGS[lang]
+        if initialized(repo):
+            flags += [flag, str(repo)]
+        else:
+            print(f"  {lang:<11} (skipped, submodule {repo.name} not initialized)",
+                  file=sys.stderr)
+    return flags
+
+
+def run_capi(ir: Path, check: bool, parse_only: bool = False) -> None:
+    extra = ["--repo", str(CORE), "--emit-ir", str(ir)]
+    if parse_only:
+        extra.append("--parse-only")
+    if check:
+        extra.append("--check")
+    run("codegen-capi", *extra)
+
+
+def run_bindings(ir: Path, langs: list[str], check: bool) -> None:
+    extra = ["--ir", str(ir), "--repo", str(CORE), *binding_flags(langs)]
+    if check:
+        extra.append("--check")
+    run("codegen-bindings", *extra)
+
+
+def main() -> None:
+    cli = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    cli.add_argument("command", nargs="?", default="all",
+                     choices=["all", "capi", "bindings", "check"])
+    cli.add_argument("--lang", default=",".join(BINDINGS),
+                     help="comma-separated subset of: " + ",".join(BINDINGS))
+    cli.add_argument("--dump-ir", type=Path, metavar="PATH",
+                     help="keep the intermediate IR JSON at this path")
+    args = cli.parse_args()
+
+    langs = [lang.strip() for lang in args.lang.split(",") if lang.strip()]
+    unknown = [lang for lang in langs if lang not in BINDINGS]
+    if unknown:
+        cli.error(f"unknown --lang value(s): {', '.join(unknown)}")
+
+    ir = args.dump_ir or DEFAULT_IR
+    check = args.command == "check"
+
+    if args.command in ("all", "check"):
+        run_capi(ir, check)
+        run_bindings(ir, langs, check)
+    elif args.command == "capi":
+        run_capi(ir, check=False)
+    elif args.command == "bindings":
+        run_capi(ir, check=False, parse_only=True)
+        run_bindings(ir, langs, check=False)
+
+
+if __name__ == "__main__":
+    main()

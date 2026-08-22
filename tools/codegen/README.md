@@ -1,0 +1,83 @@
+# codegen
+
+从 C++ 头文件自动生成 **C ABI** 以及 **Rust / Swift / Dart** 三端 FFI 绑定的代码生成工具。
+
+## 工作流程
+
+```
+┌──────────────┐   ┌──────────────────────┐   ┌────────────┐   ┌──────────────────┐
+│  C++ Header  │──→│     codegen-capi     │──→│  IR (JSON) │──→│ codegen-bindings │
+│   (core/src) │   │  libclang 解析 + IR   │   │            │   │  rust/swift/dart │
+│              │   │  生成 C ABI + 伞头文件 │   │            │   │                  │
+└──────────────┘   └──────────────────────┘   └────────────┘   └──────────────────┘
+```
+
+只有 `codegen-capi` 依赖 libclang；`codegen-bindings` 消费它导出的 IR JSON。
+
+## Crate 布局
+
+```
+tools/codegen/
+├── Cargo.toml    # Cargo workspace
+├── shared/       # codegen-shared：parser（libclang）、IR 模型与序列化、
+│                 #   naming（命名工具 + 跨头文件类型索引）、文件写入/校验、API_HEADERS 清单
+├── capi/         # codegen-capi（bin）：C API（.h + .cpp）与 umbrella header 生成
+└── bindings/     # codegen-bindings（bin）：Rust / Swift / Dart FFI 绑定生成
+```
+
+## 运行
+
+日常统一通过 workspace 根目录的 `./codegen` 脚本执行（它负责按 workspace 布局
+传路径并串联两个 generator）：
+
+```bash
+./codegen                    # 全量：C ABI → 三端绑定
+./codegen capi               # 只生成 C ABI
+./codegen bindings           # 只生成绑定（--lang rust,swift,dart 可选子集）
+./codegen check              # 只读校验，生成物过期时非零退出（给 CI 用）
+./codegen --dump-ir ir.json  # 把中间 IR 保留到指定路径调试
+```
+
+未初始化的 binding submodule 会被自动跳过，此时照常产出完整的 C ABI。
+
+生成产物：
+
+1. C ABI → `core/src/capi/`
+2. umbrella header → `core/include/nativeapi.h`
+3. Rust FFI → `bindings/nativeapi-rust/crates/nativeapi/src/`
+4. Swift FFI → `bindings/nativeapi-swift/Sources/NativeAPI/`
+5. Dart FFI → `bindings/nativeapi-flutter/packages/nativeapi/lib/src/`
+
+`core/src/capi/` **全部由本工具生成**，唯一的例外是手写支持层
+`string_utils_c.{h,cpp}`（字符串 / 值容器的所有权原语）。生成物首行都带
+`// AUTO-GENERATED. DO NOT EDIT.`，改头文件再重新生成，不要改生成物。
+没有该 banner 的已存在文件永远不会被覆盖（保护手写代码）。
+
+要纳入生成的头文件清单 `API_HEADERS` 定义在 `shared/src/lib.rs`。
+
+## 生成之后（必要的手工步骤）
+
+C ABI 是所有绑定的地基，新增符号后需要同步下游：
+
+1. **类型标签**：新增的句柄类型需要在 `core/src/foundation/id_allocator.h`
+   的 `IdTypeTag<T>` 注册表里追加一个编号（**只追加，不改已有编号**）。漏了会在
+   编译期报错，不会静默出问题。
+2. **submodule**：`bindings/nativeapi-rust/crates/cnativeapi/cxx_impl`、
+   `bindings/nativeapi-swift/Sources/CNativeAPI` 都是 nativeapi 仓库的
+   submodule，提交 core 后需要 `git submodule update --remote`
+3. **Rust raw FFI**：`crates/cnativeapi/src/bindings.rs` 由 bindgen 生成并入库，
+   新增 C 符号后需重新生成（在 workspace 根目录执行）：
+
+   ```bash
+   bindgen core/include/nativeapi.h \
+     --allowlist-function 'native_.*|free_c_str' --allowlist-type 'native_.*' \
+     --allowlist-var 'NATIVE_.*' \
+     --with-derive-default --no-layout-tests --no-prepend-enum-name \
+     --raw-line '#![allow(non_upper_case_globals)]' \
+     --raw-line '#![allow(non_camel_case_types)]' \
+     --raw-line '#![allow(non_snake_case)]' \
+     -o bindings/nativeapi-rust/crates/cnativeapi/src/bindings.rs \
+     -- -x c -isysroot "$(xcrun --show-sdk-path)" -Icore/src -Icore/include
+   ```
+
+4. **模块声明**：Rust 侧新增的 `xxx.rs` 需要在 `crates/nativeapi/src/lib.rs` 中 `pub mod`
