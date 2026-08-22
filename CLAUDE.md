@@ -8,7 +8,7 @@ This is a workspace repo: `core/` and `bindings/*` are git submodules of indepen
 - `tools/codegen` — in-repo (not a submodule) Rust workspace that generates the C ABI and language bindings from the core headers. Three crates: `shared` (libclang parser, IR, naming), `capi` (C ABI + umbrella header), `bindings` (Rust/Swift/Dart, consumes the IR JSON emitted by `capi`). Run via `./codegen` at the workspace root; `./codegen check` verifies generated files are up to date.
 - `bindings/flutter`, `bindings/rust`, `bindings/swift`, `bindings/kotlin` — language bindings wrapping the core library (repos: `nativeapi-<lang>`). The Rust binding layers `crates/nativeapi` (safe API) over `crates/cnativeapi` (FFI).
 
-A change to the core C++ API typically ripples: edit headers in `core`, run `./codegen`, then fix up each binding (see tools/codegen/README.md for the required manual follow-ups). When making such a change, update all affected repos in the same session and verify each still builds.
+A change to the core C++ API typically ripples: edit headers in `core`, then run `./codegen sync -m "<core commit message>"` — it regenerates everything, bumps each binding's embedded core submodule, reruns bindgen/ffigen, and commits core, bindings, and the workspace pointers (add `--push` to publish). The remaining manual steps (IdTypeTag registration, Rust `pub mod` declarations) are listed in tools/codegen/README.md. When making such a change, update all affected repos in the same session and verify each still builds.
 
 ## Conventions
 

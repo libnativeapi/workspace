@@ -32,6 +32,10 @@ bindings from the C++ headers in `core/`. Run it via the wrapper script:
 ```bash
 ./codegen         # full run: C ABI, then all bindings
 ./codegen check   # verify generated files are up to date (CI mode)
+./codegen sync    # after a core change: regenerate everything, bump each
+                  #   binding's embedded core submodule, rerun bindgen/ffigen,
+                  #   and commit core + bindings + workspace pointers
+                  #   (add --push to also push, -m "..." for the core message)
 ```
 
 See [tools/codegen/README.md](tools/codegen/README.md) for details.

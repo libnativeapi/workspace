@@ -35,8 +35,26 @@ tools/codegen/
 ./codegen capi               # 只生成 C ABI
 ./codegen bindings           # 只生成绑定（--lang rust,swift,dart 可选子集）
 ./codegen check              # 只读校验，生成物过期时非零退出（给 CI 用）
+./codegen sync               # 改完 core 后的一键联动（见下）
 ./codegen --dump-ir ir.json  # 把中间 IR 保留到指定路径调试
 ```
+
+### `./codegen sync`：core 改动的一键下游联动
+
+改了 core 的头文件后执行，按序完成：
+
+1. 全量重新生成（C ABI + 三端绑定）
+2. 提交 core（消息用 `-m` 指定，默认 `Update API`）
+3. 对每个 binding 仓库：把内嵌的 core submodule（`cxx_impl` / `Sources/CNativeAPI`）
+   更新到 core 的最新提交（从本地 core 取，不要求先 push）；rust 额外重跑
+   bindgen 刷新 `crates/cnativeapi/src/bindings.rs`；flutter 额外执行仓库自带的
+   `codegen.py`（.mm include、umbrella header、ffigen.yaml、dart ffigen）
+4. 有变化的 binding 仓库各提交一个 `Sync with core <sha>`
+5. 提交 workspace 的 submodule 指针
+
+默认只提交不推送；`--push` 会按 core → bindings → workspace 的顺序推送
+（保证远端的 submodule 指针不悬空）。任一仓库处于 detached HEAD 会直接报错。
+bindgen / dart 未安装时对应步骤跳过并告警。
 
 未初始化的 binding submodule 会被自动跳过，此时照常产出完整的 C ABI。
 
