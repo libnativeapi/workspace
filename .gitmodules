@@ -18,3 +18,7 @@
 	path = bindings/kotlin
 	url = ../nativeapi-kotlin.git
 	branch = main
+[submodule "bindings/csharp"]
+	path = bindings/csharp
+	url = ../nativeapi-csharp.git
+	branch = main

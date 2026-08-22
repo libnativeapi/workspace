@@ -1,6 +1,6 @@
 # codegen
 
-从 C++ 头文件自动生成 **C ABI** 以及 **Rust / Swift / Dart** 三端 FFI 绑定的代码生成工具。
+从 C++ 头文件自动生成 **C ABI** 以及 **Rust / Swift / Dart / C#** 各端 FFI 绑定的代码生成工具。
 
 ## 工作流程
 
@@ -22,7 +22,7 @@ tools/codegen/
 ├── shared/       # codegen-shared：parser（libclang）、IR 模型与序列化、
 │                 #   naming（命名工具 + 跨头文件类型索引）、文件写入/校验、API_HEADERS 清单
 ├── capi/         # codegen-capi（bin）：C API（.h + .cpp）与 umbrella header 生成
-└── bindings/     # codegen-bindings（bin）：Rust / Swift / Dart FFI 绑定生成
+└── bindings/     # codegen-bindings（bin）：Rust / Swift / Dart / C# FFI 绑定生成
 ```
 
 ## 运行
@@ -33,7 +33,7 @@ tools/codegen/
 ```bash
 ./codegen                    # 全量：C ABI → 三端绑定
 ./codegen capi               # 只生成 C ABI
-./codegen bindings           # 只生成绑定（--lang rust,swift,dart 可选子集）
+./codegen bindings           # 只生成绑定（--lang rust,swift,dart,csharp 可选子集）
 ./codegen check              # 只读校验，生成物过期时非零退出（给 CI 用）
 ./codegen sync               # 改完 core 后的一键联动（见下）
 ./codegen --dump-ir ir.json  # 把中间 IR 保留到指定路径调试
@@ -65,6 +65,7 @@ bindgen / dart 未安装时对应步骤跳过并告警。
 3. Rust FFI → `bindings/rust/crates/nativeapi/src/`
 4. Swift FFI → `bindings/swift/Sources/NativeAPI/`
 5. Dart FFI → `bindings/flutter/packages/nativeapi/lib/src/`
+6. C# FFI → `bindings/csharp/src/NativeAPI/`
 
 `core/src/capi/` **全部由本工具生成**，唯一的例外是手写支持层
 `string_utils_c.{h,cpp}`（字符串 / 值容器的所有权原语）。生成物首行都带

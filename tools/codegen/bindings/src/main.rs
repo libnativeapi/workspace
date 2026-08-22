@@ -6,6 +6,7 @@ use clap::Parser;
 use codegen_shared::ir::serializer;
 use codegen_shared::{naming, resolve_repo_root, write_files};
 
+mod csharp;
 mod dart;
 mod rust;
 mod swift;
@@ -39,6 +40,11 @@ struct CliArgs {
     #[arg(long)]
     dart: Option<PathBuf>,
 
+    /// Path to the nativeapi-csharp repository. C# bindings are skipped when
+    /// this is absent.
+    #[arg(long)]
+    csharp: Option<PathBuf>,
+
     /// Verify that generated files are up to date without writing anything.
     /// Exits non-zero when any file would change.
     #[arg(long)]
@@ -55,10 +61,12 @@ fn main() -> Result<()> {
     let rust_out = binding_out(args.rust.as_deref(), "crates/nativeapi/src");
     let swift_out = binding_out(args.swift.as_deref(), "Sources/NativeAPI");
     let dart_out = binding_out(args.dart.as_deref(), "packages/nativeapi/lib/src");
+    let csharp_out = binding_out(args.csharp.as_deref(), "src/NativeAPI");
 
     report_binding("rust", &rust_out);
     report_binding("swift", &swift_out);
     report_binding("dart", &dart_out);
+    report_binding("csharp", &csharp_out);
 
     let json = std::fs::read_to_string(&args.ir)
         .with_context(|| format!("failed to read IR from {}", args.ir.display()))?;
@@ -76,6 +84,9 @@ fn main() -> Result<()> {
     if let Some(out) = &dart_out {
         files.push(dart::generate_barrel(&api, out));
         files.push(dart::generate_support(out));
+    }
+    if let Some(out) = &csharp_out {
+        files.push(csharp::generate_support(out));
     }
     if let Some(dart_repo) = &args.dart {
         files.push(dart::generate_ffigen_config(
@@ -103,6 +114,9 @@ fn main() -> Result<()> {
         }
         if let Some(out) = &dart_out {
             files.push(dart::generate(&api, header, &origins, out, prefix));
+        }
+        if let Some(out) = &csharp_out {
+            files.push(csharp::generate(&api, header, &origins, out, prefix, subdir));
         }
     }
 

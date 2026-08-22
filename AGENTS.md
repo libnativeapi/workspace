@@ -10,7 +10,8 @@ bindings/
 ├── flutter/        # submodule: nativeapi-flutter
 ├── rust/           # submodule: nativeapi-rust
 ├── swift/          # submodule: nativeapi-swift
-└── kotlin/         # submodule: nativeapi-kotlin
+├── kotlin/         # submodule: nativeapi-kotlin
+└── csharp/         # submodule: nativeapi-csharp
 tools/codegen/      # in-repo Rust workspace: the code generator
 codegen             # Python entry point orchestrating the generators
 ```
@@ -18,7 +19,7 @@ codegen             # Python entry point orchestrating the generators
 ## Architecture
 
 - `core` — the C++ core library (repo: `nativeapi`). The source of truth for the native API surface (windows, tray icons, menus, displays, keyboard, dialogs, storage, etc.) with per-platform implementations (macOS/Windows/Linux).
-- `tools/codegen` — three crates: `shared` (libclang parser, IR, naming), `capi` (C ABI + umbrella header), `bindings` (Rust/Swift/Dart generators, consuming the IR JSON emitted by `capi`). Only `capi` depends on libclang. See tools/codegen/README.md.
+- `tools/codegen` — three crates: `shared` (libclang parser, IR, naming), `capi` (C ABI + umbrella header), `bindings` (Rust/Swift/Dart/C# generators, consuming the IR JSON emitted by `capi`). Only `capi` depends on libclang. See tools/codegen/README.md.
 - `bindings/*` — language bindings wrapping the core library (repos: `nativeapi-<lang>`). Each embeds the core repo as a nested submodule (`cxx_impl`, or `Sources/CNativeAPI` for Swift). The Rust binding layers `crates/nativeapi` (safe API) over `crates/cnativeapi` (FFI).
 
 ## Code generation
@@ -26,7 +27,7 @@ codegen             # Python entry point orchestrating the generators
 Always drive the generators through `./codegen` at the workspace root:
 
 - `./codegen` — full run: C ABI, then all bindings
-- `./codegen capi` / `./codegen bindings [--lang rust,swift,dart]`
+- `./codegen capi` / `./codegen bindings [--lang rust,swift,dart,csharp]`
 - `./codegen check` — read-only verification, non-zero exit when stale (CI mode)
 - `./codegen sync [-m "msg"] [--push]` — full downstream propagation, see below
 

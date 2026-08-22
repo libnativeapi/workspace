@@ -36,6 +36,7 @@ BINDINGS = {
     "rust": ("--rust", WORKSPACE / "bindings" / "rust"),
     "swift": ("--swift", WORKSPACE / "bindings" / "swift"),
     "dart": ("--dart", WORKSPACE / "bindings" / "flutter"),
+    "csharp": ("--csharp", WORKSPACE / "bindings" / "csharp"),
 }
 
 # Binding repos without a generator that still embed core and need dependency
