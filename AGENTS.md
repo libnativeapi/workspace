@@ -10,7 +10,6 @@ bindings/
 ├── flutter/        # submodule: nativeapi-flutter
 ├── rust/           # submodule: nativeapi-rust
 ├── swift/          # submodule: nativeapi-swift
-├── kotlin/         # submodule: nativeapi-kotlin
 └── csharp/         # submodule: nativeapi-csharp
 tools/codegen/      # in-repo Rust workspace: the code generator
 codegen             # Python entry point orchestrating the generators

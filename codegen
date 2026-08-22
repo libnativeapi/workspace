@@ -41,7 +41,7 @@ BINDINGS = {
 
 # Binding repos without a generator that still embed core and need dependency
 # bumps during sync.
-SYNC_ONLY = [WORKSPACE / "bindings" / "kotlin"]
+SYNC_ONLY: list[Path] = []
 
 
 def run(binary: str, *extra: str) -> None:

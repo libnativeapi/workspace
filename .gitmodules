@@ -14,10 +14,6 @@
 	path = bindings/swift
 	url = ../nativeapi-swift.git
 	branch = main
-[submodule "nativeapi-kotlin"]
-	path = bindings/kotlin
-	url = ../nativeapi-kotlin.git
-	branch = main
 [submodule "bindings/csharp"]
 	path = bindings/csharp
 	url = ../nativeapi-csharp.git
