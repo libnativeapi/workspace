@@ -19,6 +19,8 @@ pub const API_HEADERS: &[&str] = &[
     "display.h",
     "display_manager.h",
     "url_opener.h",
+    "app_info.h",
+    "device_info.h",
     "preferences.h",
     "secure_storage.h",
     "launch_at_login.h",
