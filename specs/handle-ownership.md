@@ -1,6 +1,8 @@
 # C ABI 句柄所有权规则
 
 状态：**已决策，实施中**（DESIGN_REVIEW.md P0-3 / P0-4，TASKS.md T4）
+核实基准：2026-08-31 —— `g_windows` 已确认消灭；`window_windows.cpp:200`、
+`window_manager_macos.mm:169` 两处行号引用仍准确
 
 本文是 C ABI 句柄语义的唯一权威说明。绑定作者和纯 C 调用方都以此为准。
 
@@ -83,23 +85,24 @@ DESIGN_REVIEW 初稿说「三套账本合并为句柄表这一个真相来源」
 
 这项尚未实施，是 T4.4 的剩余部分。
 
-### 2.3 命名统一为 `_release`
+### 2.5 释放函数命名（已被 c-abi.md 取代）
 
-现状是 `native_display_free` 和 `native_window_destroy` 并存，暗示两种不同的语义。既然语义已经统一，命名也要统一：
+> **本节记录的是当时的决策，实施结果不同。以 [c-abi.md](c-abi.md) §3.1 为准。**
 
-```c
-void native_<type>_release(native_<type>_t handle);
-```
+当时的方案是把 `native_display_free` / `native_window_destroy` 统一改名为
+`native_<type>_release`，理由是调用方释放的是自己那份引用而非对象本身。
 
-`release` 而非 `free`/`destroy`：调用方释放的是**自己那份引用**，不是对象本身——对象在最后一个引用消失时才析构。这个区别对绑定层很重要。
+实际落地时发现这个方案没有区分**数组**与**数组元素**两级所有权，最终改为三函数
+形态：`_free`（释放一份引用）、`_list_free`（连数组带元素一起释放）、
+`_list_release`（只释放数组，元素交给调用方）。`destroy` 已从 ABI 中消失。
 
-### 2.4 谁负责 release
+### 2.6 谁负责释放
 
 | 来源 | 调用方是否要 release |
 |---|---|
 | `native_x_create*()` | **是** |
 | 返回句柄的 getter（如 `native_window_manager_get_current()`） | **是** —— 每次返回都是一份新引用 |
-| 列表里的每个句柄（`native_x_list_t`） | 由 `_list_release` 统一处理 |
+| 列表里的每个句柄（`native_x_list_t`） | 取决于用 `_list_free` 还是 `_list_release`，见 [c-abi.md](c-abi.md) §3.1 |
 | 回调参数里的句柄 | **否** —— 仅在回调期间有效，需要留存请自行 retain |
 
 规则简化为一句：**凡是返回 `native_*_t` 的函数，调用方都拥有那份引用并负责 release。** 回调参数是唯一例外。
@@ -110,6 +113,6 @@ void native_<type>_release(native_<type>_t handle);
 
 - 已生成的 16 个 capi 文件要从值拷贝改为活引用；`DisplayManager` 内部需持有 `shared_ptr<Display>`，生成器同步修改。
 - 手写模块迁移到句柄表，但**只做机械的句柄封装替换**——签名改造（错误码化）通过 codegen 重新生成落地，不手工编辑即将被删除的文件。
-- `native_*_id_t` 目前是 `long`，在 Windows 上 32 位、其它平台 64 位，同一个 ABI 宽度不一致。句柄改造时一并收敛为固定宽度整数。
+- ~~`native_*_id_t` 目前是 `long`~~ —— 已收敛为 `unsigned int`（与 `IdAllocator::IdType` 同宽）。列表结构体里的 `count` 仍是 `long`，宽度不可移植的问题未清完，见 DESIGN_REVIEW A1。
 
 **执行顺序上的硬约束**：本文的 2.1 必须在扩大 codegen 覆盖率之前落地。否则每迁移一个模块，就是把「值拷贝 vs 活引用」的分裂复制到下游一次。

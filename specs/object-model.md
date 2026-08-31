@@ -1,7 +1,8 @@
 # 对象模型规范：身份对象与值对象
 
-> 状态：已实施
+> 状态：已实施（存量合规缺口在文内逐条标注）
 > 适用范围：`src/` 全部公共类型，以及 codegen 生成的 C ABI 与各语言绑定
+> 核实基准：2026-08-31，对照 `core/src` 逐类核对
 
 本规范回答一个问题：**库中的一个公共类型，应该以什么方式被创建、持有、
 传递和销毁。**每个公共类型必须归入下面两类之一；新增类型时先决定归属，
@@ -25,8 +26,13 @@
 
 ### 规则
 
-1. **以 `std::shared_ptr` 管理和传递。**类内 `delete` 拷贝构造、拷贝赋值、
-   移动构造、移动赋值四件套，并在注释中说明"share the shared_ptr instead"。
+1. **以 `std::shared_ptr` 管理和传递，禁拷贝禁移动。**新代码显式 `delete`
+   拷贝构造、拷贝赋值、移动构造、移动赋值四件套。存量代码有两种达成方式并存：
+   显式四件套（`Display`、`Shortcut`、`Preferences`、`SecureStorage`、
+   `LaunchAtLogin`）；借 `unique_ptr<Impl>` 成员隐式删除（`Window`、`Menu`、
+   `MenuItem`、`TrayIcon`、`KeyboardMonitor`、`MessageDialog`）——效果相同，
+   但读头文件看不出意图，改到时补成显式。
+   已知违规：`Image` 公开了拷贝/移动构造，见下文。
 2. **被 manager/registry 以集合管理的类型持有一个整数 ID。**
    - 类型别名在该类型自己的头文件中定义一次：
      `typedef IdAllocator::IdType XxxId;`
@@ -36,6 +42,9 @@
      登记 tag（**只可追加，不可改号**）；漏登记是编译错误。
 3. **同一底层资源的重复查询必须返回同一个实例。**manager 负责按底层
    资源的平台身份做实例缓存与去重；实例存活期间 ID 因而稳定。
+   去重只覆盖经 manager 的查询路径——直接用 `Window(void*)` 这类包装构造函数
+   可以绕过它，得到共享同一 ID 的第二个包装对象
+   （[handle-ownership.md](handle-ownership.md) §2.4）。
 4. **属性活读。**getter 每次从底层资源读取当前状态；持有的实例永远反映
    现状，不保存快照。底层资源消失后 getter 返回类型默认值。
 5. **生命周期与底层资源解耦但单向感知。**资源消失（如显示器拔出）时
@@ -44,14 +53,19 @@
 
 ### 成员
 
-`Window`、`TrayIcon`、`Menu`、`MenuItem`、`Shortcut`、`Display`、`Image`。
+`Window`、`TrayIcon`、`Menu`、`MenuItem`、`Shortcut`、`Display`
+（各自头文件定义 `XxxId`；`menu.h` 同时定义 `MenuId` 和 `MenuItemId`）。
 
 ### 无集合 ID 的身份对象
 
 `Preferences`、`SecureStorage`、`LaunchAtLogin`、`KeyboardMonitor`、
-`MessageDialog` 等实例类：同样禁拷贝、以 handle 跨 ABI，但不进入任何
+`MessageDialog`、`Image`：同样禁拷贝、以 handle 跨 ABI，但不进入任何
 manager 集合，因此不定义 `XxxId` 别名、不调用 `IdAllocator::Allocate`。
 它们仍需要 `IdTypeTag` 登记——那只服务于 handle 表的类型校验。
+
+`Image` 是这组里目前唯一的违规者：静态工厂返回 `shared_ptr` 没问题，但它同时
+公开了深拷贝构造（`Image(const Image&)` 深拷贝 pimpl）和移动构造，与本节规则
+直接矛盾。修复方向是删掉这两个构造（DESIGN_REVIEW C10）。
 
 ## 3. 值对象（value object）
 
@@ -60,15 +74,31 @@ manager 集合，因此不定义 `XxxId` 别名、不调用 `IdAllocator::Alloca
 ### 规则
 
 1. 可自由拷贝；需要相等性时按成员值比较。
-2. 不进 handle 表；跨 C ABI 时按值转换为对应的 C struct。
+2. 不进 handle 表；跨 C ABI 时按值转换为对应的 C struct（例外见 3.1）。
 3. 不持有 ID，不注册 `IdTypeTag`。
 
 ### 成员
 
 - 几何与外观：`Point`、`Size`、`Rectangle`、`Color`
 - 输入描述：`KeyboardAccelerator`
-- options 类：`ShortcutOptions`、`WindowOptions` 等
+- options 类：`ShortcutOptions`（目前唯一——文档示例里出现的 `WindowOptions`
+  并不存在，属 DESIGN_REVIEW 第四节的文档腐烂）
 - 全部 Event 类（见第 5 节）
+
+### 3.1 例外：经句柄跨 ABI 的值对象
+
+`PositioningStrategy` 在 C++ 侧是可拷贝的值对象（静态工厂按值返回），但它带私有
+状态、没有平面 C struct 映射，跨 ABI 时由生成的 capi 装进 `shared_ptr` 进句柄表，
+因此也登记了 `IdTypeTag`（tag 12）。这是「值对象不进 handle 表」目前唯一的例外；
+新类型遇到同样处境（带工厂 API / 私有状态的纯数据）按此先例处理，不再各开新形态。
+注意它的 `Relative(const Window&)` 内部存裸指针，C 侧跨调用持有 strategy 句柄会
+放大悬垂风险（DESIGN_REVIEW C10）。
+
+### 3.2 不参与归类的抽象基类
+
+`Storage`（`Preferences` / `SecureStorage` 的公共接口）与 `Dialog`
+（`MessageDialog` 的基类）是纯接口，自身从不实例化，归类落在具体派生类上。
+`Dialog` 基类无 Id、非 EventEmitter 的方向问题见 DESIGN_REVIEW C10。
 
 ## 4. 案例：Display 的归属
 
