@@ -20,6 +20,16 @@ codegen             # Python entry point orchestrating the generators
 - `tools/codegen` — three crates: `shared` (libclang parser, IR, naming), `capi` (C ABI + umbrella header), `bindings` (Rust/Dart/C# generators, consuming the IR JSON emitted by `capi`). Only `capi` depends on libclang. See tools/codegen/README.md.
 - `bindings/*` — language bindings wrapping the core library (repos: `nativeapi-<lang>`). Each embeds the core repo as a nested submodule (`cxx_impl`). The Rust binding layers `crates/nativeapi` (safe API) over `crates/cnativeapi` (FFI).
 
+## Design specs
+
+`specs/` holds the settled design rules for `core/` — layering, the identity/value object
+model, the platform seam, the event system, managers, and the C ABI. Start at
+[specs/README.md](specs/README.md); read the relevant spec before adding or reshaping
+public API in `core/src/`.
+
+`DESIGN_REVIEW.md` is the companion: it tracks the *unresolved* inconsistencies found in the
+2026-08-22 review. Specs point at its item numbers wherever something is still open.
+
 ## Code generation
 
 Always drive the generators through `./codegen` at the workspace root:
