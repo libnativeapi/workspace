@@ -796,7 +796,8 @@ fn render_rust_constructor(out: &mut String, class: &Class, ctor: &Constructor, 
         class.name
     )
     .unwrap();
-    writeln!(out, "    pub fn {name}({}) -> Option<Self> {{", params.join(", ")).unwrap();
+    let safety = render_pointer_safety(out, &ctor.params);
+    writeln!(out, "    pub {safety}fn {name}({}) -> Option<Self> {{", params.join(", ")).unwrap();
     render_param_bindings(out, &ctor.params, "        ");
     writeln!(out, "        unsafe {{").unwrap();
     writeln!(
@@ -828,12 +829,13 @@ fn render_rust_method(
     params.extend(rust_param_list(&method.params));
 
     let rust_return = rust_public_type(&method.return_type);
+    let safety = render_pointer_safety(out, &method.params);
     if rust_return == "()" {
-        writeln!(out, "    pub fn {method_name}({}) {{", params.join(", ")).unwrap();
+        writeln!(out, "    pub {safety}fn {method_name}({}) {{", params.join(", ")).unwrap();
     } else {
         writeln!(
             out,
-            "    pub fn {method_name}({}) -> {rust_return} {{",
+            "    pub {safety}fn {method_name}({}) -> {rust_return} {{",
             params.join(", ")
         )
         .unwrap();
@@ -852,6 +854,18 @@ fn render_rust_method(
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
+}
+
+fn render_pointer_safety(out: &mut String, params: &[Param]) -> &'static str {
+    if !params.iter().any(|param| rust_param_type(&param.ty).starts_with('*')) {
+        return "";
+    }
+    writeln!(out, "    ///").unwrap();
+    writeln!(out, "    /// # Safety").unwrap();
+    writeln!(out, "    /// Raw pointers must reference valid platform objects of the expected type.").unwrap();
+    writeln!(out, "    /// The caller must uphold the native API's thread and lifetime requirements,").unwrap();
+    writeln!(out, "    /// including keeping objects alive while the returned wrapper uses them.").unwrap();
+    "unsafe "
 }
 
 fn rust_param_list(params: &[Param]) -> Vec<String> {
