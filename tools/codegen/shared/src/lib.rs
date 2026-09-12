@@ -25,6 +25,8 @@ pub const API_HEADERS: &[&str] = &[
     "secure_storage.h",
     "launch_at_login.h",
     "message_dialog.h",
+    "file_dialog.h",
+    "notification_manager.h",
     "image.h",
     "window.h",
     "window_manager.h",
