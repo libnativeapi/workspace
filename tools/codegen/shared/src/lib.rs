@@ -92,7 +92,7 @@ pub fn write_or_check(file: &GeneratedFile, check: bool) -> Result<Written> {
     if check {
         let existing =
             existing.with_context(|| format!("{} does not exist", file.path.display()))?;
-        if existing != file.contents {
+        if existing.replace("\r\n", "\n") != file.contents.replace("\r\n", "\n") {
             bail!("{} is not up to date", file.path.display());
         }
         return Ok(Written::Ok);

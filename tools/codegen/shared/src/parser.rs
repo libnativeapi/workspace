@@ -94,7 +94,9 @@ fn parse_header(
     // `int` in the AST.
     args.extend(platform_args());
     for include in includes {
-        args.push(format!("-I{}", include.display()));
+        // Clang's include search does not accept Windows verbatim path prefixes.
+        let path = include.to_string_lossy();
+        args.push(format!("-I{}", path.strip_prefix(r"\\?\").unwrap_or(&path).replace('\\', "/")));
     }
 
     let tu = index
@@ -843,6 +845,14 @@ fn map_type(ty: Type, types: &TypeIndex) -> TypeRef {
         if let Some(pointee) = ty.get_pointee_type() {
             return map_type(pointee, types);
         }
+    }
+
+    // The published C ABI uses unsigned long for size_t parameters/results.
+    // Preserve that spelling on LLP64 hosts too; canonicalizing MSVC's size_t
+    // to unsigned long long otherwise makes bindings disagree with that ABI.
+    // Changing the ABI's integer widths is tracked separately in spec C-ABI A1.
+    if matches!(ty.get_display_name().as_str(), "size_t" | "std::size_t") {
+        return TypeRef::Int { name: "unsigned long".to_string() };
     }
 
     // A named integer alias keeps its own C spelling: `WindowId` must not

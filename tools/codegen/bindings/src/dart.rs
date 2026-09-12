@@ -170,7 +170,7 @@ pub fn generate_barrel(api: &Api, dart_out: &Path) -> GeneratedFile {
     let mut paths: Vec<String> = api
         .headers
         .iter()
-        .map(|header| dart_relative_path(header).to_string_lossy().to_string())
+        .map(|header| dart_relative_path(header).to_string_lossy().replace('\\', "/"))
         .collect();
     paths.push("support.dart".to_string());
     paths.sort();
@@ -299,12 +299,12 @@ fn dart_import_path(from: &Path, to: &Path) -> String {
         return name.to_string();
     }
     if from_dir.as_os_str().is_empty() {
-        return format!("{}/{name}", to_dir.to_string_lossy());
+        return format!("{}/{name}", to_dir.to_string_lossy().replace('\\', "/"));
     }
     if to_dir.as_os_str().is_empty() {
         return format!("../{name}");
     }
-    format!("../{}/{name}", to_dir.to_string_lossy())
+    format!("../{}/{name}", to_dir.to_string_lossy().replace('\\', "/"))
 }
 
 // ---------------------------------------------------------------------------

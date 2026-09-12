@@ -152,9 +152,12 @@ def regen_rust_raw_ffi(repo: Path) -> bool:
         print("warning: bindgen not installed, skipped regenerating "
               "crates/cnativeapi/src/bindings.rs", file=sys.stderr)
         return False
-    sysroot = subprocess.run(
-        ["xcrun", "--show-sdk-path"], capture_output=True, text=True,
-    ).stdout.strip()
+    clang_args = ["-x", "c"]
+    if sys.platform == "darwin":
+        sysroot = subprocess.run(
+            ["xcrun", "--show-sdk-path"], capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        clang_args += ["-isysroot", sysroot]
     cmd = [
         "bindgen", str(CORE / "include" / "nativeapi.h"),
         "--allowlist-function", "native_.*|free_c_str",
@@ -165,7 +168,7 @@ def regen_rust_raw_ffi(repo: Path) -> bool:
         "--raw-line", "#![allow(non_camel_case_types)]",
         "--raw-line", "#![allow(non_snake_case)]",
         "-o", str(repo / "crates" / "cnativeapi" / "src" / "bindings.rs"),
-        "--", "-x", "c", "-isysroot", sysroot,
+        "--", *clang_args,
         f"-I{CORE / 'src'}", f"-I{CORE / 'include'}",
     ]
     if subprocess.run(cmd).returncode != 0:
