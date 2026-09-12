@@ -14,6 +14,11 @@
 
 只有 `codegen-capi` 依赖 libclang；`codegen-bindings` 消费它导出的 IR JSON。
 
+生成 Dart bindings 时需要 `dart` 在 PATH 中。生成器在写入和只读校验前都执行
+`dart format`，使用与 Flutter 包一致的 Dart 3.9 语言版本，避免生成后再次触发
+Flutter CI 的格式检查失败。Windows 上请将 Flutter SDK 的 `bin/cache/dart-sdk/bin`
+加入 PATH。
+
 ## Crate 布局
 
 ```
