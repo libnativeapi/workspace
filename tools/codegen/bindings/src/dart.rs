@@ -162,6 +162,17 @@ pub fn generate_support(dart_out: &Path) -> GeneratedFile {
     }
 }
 
+/// Internal callback ownership shared by the generated wrappers.
+pub fn generate_callbacks(dart_out: &Path) -> GeneratedFile {
+    let mut contents = String::new();
+    write_banner(&mut contents);
+    contents.push_str(include_str!("dart_callbacks.dart.in"));
+    GeneratedFile {
+        path: dart_out.join("callbacks.dart"),
+        contents,
+    }
+}
+
 /// The barrel of generated modules. `lib/nativeapi.dart` stays hand-written —
 /// it also exports the hand-written widgets — and re-exports this.
 pub fn generate_barrel(api: &Api, dart_out: &Path) -> GeneratedFile {
@@ -245,6 +256,20 @@ fn generate_dart(api: &Api, header: &Header, origins: &TypeOrigins, prefix: &str
             out,
             "import '{}';",
             dart_import_path(&here, Path::new("support.dart"))
+        )
+        .unwrap();
+        writeln!(out).unwrap();
+    }
+
+    if header
+        .classes
+        .iter()
+        .any(|class| class.event.is_some() || class.name == "Shortcut")
+    {
+        writeln!(
+            out,
+            "import '{}';",
+            dart_import_path(&here, Path::new("callbacks.dart"))
         )
         .unwrap();
         writeln!(out).unwrap();
@@ -585,6 +610,7 @@ fn dart_event_field_type(ty: &TypeRef) -> String {
 
 fn render_dart_class(out: &mut String, api: &Api, header: &Header, class: &Class, prefix: &str) {
     let instance = class.is_instance();
+    let lifecycle = emitted_group(api, class).is_some() || class.name == "Shortcut";
     writeln!(out, "class {} {{", class.name).unwrap();
 
     if instance {
@@ -595,6 +621,9 @@ fn render_dart_class(out: &mut String, api: &Api, header: &Header, class: &Class
         .unwrap();
         writeln!(out, "  /// object becomes unreachable.").unwrap();
         writeln!(out, "  {}.fromHandle(this.nativeHandle) {{", class.name).unwrap();
+        if class.name == "Shortcut" {
+            writeln!(out, "    shortcutCallbacks.attach(nativeHandle);").unwrap();
+        }
         writeln!(
             out,
             "    _finalizer.attach(this, nativeHandle, detach: this);"
@@ -611,23 +640,84 @@ fn render_dart_class(out: &mut String, api: &Api, header: &Header, class: &Class
         writeln!(out).unwrap();
         writeln!(out, "  /// The underlying handle-table entry.").unwrap();
         writeln!(out, "  final int nativeHandle;").unwrap();
+        if lifecycle {
+            writeln!(out, "  bool _disposed = false;").unwrap();
+        }
         writeln!(out).unwrap();
         writeln!(
             out,
             "  static final Finalizer<int> _finalizer = Finalizer<int>("
         )
         .unwrap();
-        writeln!(
-            out,
-            "    (handle) => _bindings.{}(handle),",
-            c_free_symbol(prefix, &class.name)
-        )
-        .unwrap();
+        if lifecycle {
+            writeln!(out, "    _releaseHandle,").unwrap();
+        } else {
+            writeln!(
+                out,
+                "    (handle) => _bindings.{}(handle),",
+                c_free_symbol(prefix, &class.name)
+            )
+            .unwrap();
+        }
         writeln!(out, "  );").unwrap();
         writeln!(out).unwrap();
-        writeln!(out, "  /// Releases the handle now instead of at collection.").unwrap();
+        writeln!(
+            out,
+            "  /// Releases the handle now instead of at collection."
+        )
+        .unwrap();
+        if lifecycle {
+            writeln!(out, "  ///").unwrap();
+            if class.name == "Shortcut" {
+                writeln!(
+                    out,
+                    "  /// Releases a standalone shortcut's callback. A registered shortcut's"
+                )
+                .unwrap();
+                writeln!(
+                    out,
+                    "  /// callback stays active until the manager unregisters it."
+                )
+                .unwrap();
+            } else {
+                writeln!(
+                    out,
+                    "  /// Unregisters this handle's listeners before releasing the handle."
+                )
+                .unwrap();
+            }
+            writeln!(out, "  /// Calling this more than once has no effect.").unwrap();
+        }
         writeln!(out, "  void dispose() {{").unwrap();
+        if lifecycle {
+            writeln!(out, "    if (_disposed) return;").unwrap();
+            writeln!(out, "    _disposed = true;").unwrap();
+        }
         writeln!(out, "    _finalizer.detach(this);").unwrap();
+        if lifecycle {
+            if class.name == "Shortcut" {
+                writeln!(out, "    _releaseHandle(nativeHandle);").unwrap();
+            } else {
+                writeln!(
+                    out,
+                    "    if (_pendingRegistrations == 0) _releaseHandle(nativeHandle);"
+                )
+                .unwrap();
+            }
+            writeln!(out, "  }}").unwrap();
+            writeln!(out).unwrap();
+            writeln!(out, "  static void _releaseHandle(int nativeHandle) {{").unwrap();
+            if class.name == "Shortcut" {
+                writeln!(out, "    shortcutCallbacks.release(nativeHandle);").unwrap();
+            } else {
+                writeln!(
+                    out,
+                    "    _listeners.dispose(nativeHandle, _bindings.{});",
+                    c_remove_listener_symbol(prefix, &class.name)
+                )
+                .unwrap();
+            }
+        }
         writeln!(
             out,
             "    _bindings.{}(nativeHandle);",
@@ -681,14 +771,10 @@ fn render_dart_class(out: &mut String, api: &Api, header: &Header, class: &Class
 
     render_dart_listener(out, api, class, prefix);
 
-    if emitted_group(api, class).is_none() && class_takes_callback(class) {
-        writeln!(
-            out,
-            "  /// Trampolines stay reachable for as long as the C side may call them."
-        )
-        .unwrap();
-        writeln!(out, "  static final List<Object> _listeners = <Object>[];").unwrap();
-        writeln!(out).unwrap();
+    if class.name == "WindowManager" {
+        for hook in ["Show", "Hide"] {
+            writeln!(out, "  static ffi.NativeCallable<ffi.Void Function(ffi.UnsignedInt, ffi.Pointer<ffi.Void>)>? _will{hook}Hook;").unwrap();
+        }
     }
 
     writeln!(out, "}}").unwrap();
@@ -722,7 +808,7 @@ fn render_dart_constructor(out: &mut String, class: &Class, ctor: &Constructor, 
     )
     .unwrap();
     render_param_cleanup(out, &ctor.params, "    ");
-    writeln!(out, "    if (handle == 0) return null;").unwrap();
+    render_callback_result(out, class.name == "Shortcut", false, &ctor.params);
     writeln!(out, "    return {}.fromHandle(handle);", class.name).unwrap();
     writeln!(out, "  }}").unwrap();
     writeln!(out).unwrap();
@@ -778,6 +864,9 @@ fn render_dart_method(
     } else {
         method.params.clone()
     };
+    if class.name == "Shortcut" && method.name == "SetCallback" {
+        writeln!(out, "    if (_disposed) return;").unwrap();
+    }
     render_param_bindings(out, &params, prefix, "    ");
     let receiver = instance.then(|| "nativeHandle".to_string());
     let call = format!(
@@ -785,9 +874,95 @@ fn render_dart_method(
         c_method_symbol(prefix, class, method),
         call_args(&params, receiver)
     );
-    render_return(out, &method.return_type, &call, &params, header, prefix);
+    if class.name == "Shortcut" && method.name == "SetCallback" {
+        writeln!(
+            out,
+            "    shortcutCallbacks.replace(nativeHandle, callbackCallable);"
+        )
+        .unwrap();
+    } else if class.name == "WindowManager"
+        && matches!(method.name.as_str(), "SetWillShowHook" | "SetWillHideHook")
+    {
+        let field = format!(
+            "_{}",
+            method
+                .name
+                .strip_prefix("Set")
+                .unwrap()
+                .to_lower_camel_case()
+        );
+        writeln!(out, "    final previous = {field};").unwrap();
+        writeln!(out, "    {field} = hookCallable;").unwrap();
+        writeln!(out, "    {call};").unwrap();
+        writeln!(out, "    previous?.close();").unwrap();
+    } else if class.name == "ShortcutManager" && method.name == "Unregister" {
+        if params[0].name == "id" {
+            writeln!(out, "    final result = {call};").unwrap();
+            writeln!(out, "    if (result) shortcutCallbacks.unregister(id);").unwrap();
+        } else {
+            writeln!(out, "    final handle = _bindings.native_shortcut_manager_get_with_accelerator(acceleratorNative);").unwrap();
+            writeln!(
+                out,
+                "    final id = handle == 0 ? 0 : _bindings.native_shortcut_get_id(handle);"
+            )
+            .unwrap();
+            writeln!(out, "    final result = {call};").unwrap();
+            render_param_cleanup(out, &params, "    ");
+            writeln!(
+                out,
+                "    if (handle != 0) _bindings.native_shortcut_free(handle);"
+            )
+            .unwrap();
+            writeln!(out, "    if (result) shortcutCallbacks.unregister(id);").unwrap();
+        }
+        writeln!(out, "    return result;").unwrap();
+    } else if class.name == "ShortcutManager" && method.name == "UnregisterAll" {
+        writeln!(out, "    final ids = shortcutCallbacks.registeredIds;").unwrap();
+        writeln!(out, "    final result = {call};").unwrap();
+        writeln!(out, "    for (final id in ids) {{").unwrap();
+        writeln!(
+            out,
+            "      final handle = _bindings.native_shortcut_manager_get_with_id(id);"
+        )
+        .unwrap();
+        writeln!(out, "      if (handle == 0) {{").unwrap();
+        writeln!(out, "        shortcutCallbacks.unregister(id);").unwrap();
+        writeln!(out, "      }} else {{").unwrap();
+        writeln!(out, "        _bindings.native_shortcut_free(handle);").unwrap();
+        writeln!(out, "      }}").unwrap();
+        writeln!(out, "    }}").unwrap();
+        writeln!(out, "    return result;").unwrap();
+    } else {
+        render_return(out, &method.return_type, &call, &params, header, prefix);
+    }
     writeln!(out, "  }}").unwrap();
     writeln!(out).unwrap();
+}
+
+fn render_callback_result(out: &mut String, shortcut: bool, managed: bool, params: &[Param]) {
+    let callback = params.iter().find(|param| is_callback(&param.ty));
+    if !shortcut && callback.is_none() {
+        writeln!(out, "    if (handle == 0) return null;").unwrap();
+        return;
+    }
+    writeln!(out, "    if (handle == 0) {{").unwrap();
+    if let Some(param) = callback {
+        writeln!(
+            out,
+            "      {}Callable.close();",
+            param.name.to_lower_camel_case()
+        )
+        .unwrap();
+    }
+    writeln!(out, "      return null;").unwrap();
+    writeln!(out, "    }}").unwrap();
+    if shortcut {
+        let callable = callback
+            .map(|param| format!("{}Callable", param.name.to_lower_camel_case()))
+            .unwrap_or("null".to_string());
+        let action = if managed { "register" } else { "create" };
+        writeln!(out, "    shortcutCallbacks.{action}(handle, {callable});").unwrap();
+    }
 }
 
 /// The property name a `SetX(value)` method should use, when the class also
@@ -822,12 +997,19 @@ fn render_dart_listener(out: &mut String, api: &Api, class: &Class, prefix: &str
         return;
     };
     let c_event = format!("{C}.{}", c_type_name(prefix, &group.name));
+    let native_type = format!("ffi.Void Function(ffi.Pointer<{c_event}>, ffi.Pointer<ffi.Void>)");
     let instance = class.is_instance();
-    // Listener registration is an instance method everywhere: handle classes
-    // pass their handle, singletons go through `.instance`.
-    let keyword = "  ";
     let self_arg = if instance { "nativeHandle, " } else { "" };
-
+    let handle = if instance { "nativeHandle" } else { "0" };
+    let identity = match class.name.as_str() {
+        "Menu" | "MenuItem" | "TrayIcon" => format!(
+            "_bindings.{prefix}{}_get_id(nativeHandle)",
+            class.name.to_snake_case()
+        ),
+        _ => handle.to_string(),
+    };
+    let add = c_add_listener_symbol(prefix, &class.name);
+    let remove = c_remove_listener_symbol(prefix, &class.name);
     writeln!(
         out,
         "  /// Registers [callback] for every `{}` this `{}` emits.",
@@ -850,19 +1032,97 @@ fn render_dart_listener(out: &mut String, api: &Api, class: &Class, prefix: &str
         "  /// returns. That thread must therefore be this isolate's own; see the"
     )
     .unwrap();
-    writeln!(out, "  /// package README for what that means under Flutter.").unwrap();
     writeln!(
         out,
-        "{keyword}ListenerId addListener(void Function({}) callback) {{",
+        "  /// package README for what that means under Flutter."
+    )
+    .unwrap();
+    writeln!(out, "  ///").unwrap();
+    if instance {
+        writeln!(
+            out,
+            "  /// Release the registration with [removeListener] or [dispose]."
+        )
+        .unwrap();
+        writeln!(
+            out,
+            "  /// Returns `0` if registration fails or this handle is disposed."
+        )
+        .unwrap();
+    } else {
+        writeln!(
+            out,
+            "  /// Release the registration with [removeListener] when no longer needed."
+        )
+        .unwrap();
+        writeln!(out, "  /// Returns `0` if registration fails.").unwrap();
+    }
+    writeln!(
+        out,
+        "  ListenerId addListener(void Function({}) callback) {{",
+        group.name
+    )
+    .unwrap();
+    if instance {
+        writeln!(
+            out,
+            "    if (_disposed || _listeners.isDisposing(nativeHandle)) return 0;"
+        )
+        .unwrap();
+    }
+    writeln!(out, "    final emitter = {identity};").unwrap();
+    writeln!(out, "    final callable = _createListener(callback);").unwrap();
+    if instance {
+        writeln!(out, "    _pendingRegistrations++;").unwrap();
+    }
+    writeln!(out, "    try {{").unwrap();
+    writeln!(
+        out,
+        "      final id = _bindings.{add}({self_arg}callable.nativeFunction, ffi.nullptr);"
+    )
+    .unwrap();
+    writeln!(out, "      if (id == 0) {{").unwrap();
+    writeln!(out, "        callable.close();").unwrap();
+    writeln!(out, "      }} else {{").unwrap();
+    writeln!(
+        out,
+        "        _listeners.add(emitter, id, {handle}, callable);"
+    )
+    .unwrap();
+    writeln!(out, "      }}").unwrap();
+    writeln!(out, "      return id;").unwrap();
+    writeln!(out, "    }} catch (_) {{").unwrap();
+    writeln!(out, "      callable.close();").unwrap();
+    writeln!(out, "      rethrow;").unwrap();
+    if instance {
+        writeln!(out, "    }} finally {{").unwrap();
+        writeln!(out, "      _pendingRegistrations--;").unwrap();
+        writeln!(
+            out,
+            "      if (_disposed && _pendingRegistrations == 0) _releaseHandle(nativeHandle);"
+        )
+        .unwrap();
+    }
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "  }}").unwrap();
+    writeln!(out).unwrap();
+    // Separate scope: the native closure must not accidentally capture its wrapper.
+    writeln!(
+        out,
+        "  static ffi.NativeCallable<{native_type}> _createListener(void Function({}) callback) {{",
         group.name
     )
     .unwrap();
     writeln!(
         out,
-        "    final callable = ffi.NativeCallable<\n        ffi.Void Function(ffi.Pointer<{c_event}>, ffi.Pointer<ffi.Void>)>.isolateLocal("
+        "    return ffi.NativeCallable<{native_type}>.isolateLocal("
     )
     .unwrap();
-    writeln!(out, "      (ffi.Pointer<{c_event}> event, ffi.Pointer<ffi.Void> _) {{").unwrap();
+    writeln!(
+        out,
+        "      (ffi.Pointer<{c_event}> event, ffi.Pointer<ffi.Void> _) {{"
+    )
+    .unwrap();
     writeln!(out, "        if (event == ffi.nullptr) return;").unwrap();
     writeln!(
         out,
@@ -873,51 +1133,45 @@ fn render_dart_listener(out: &mut String, api: &Api, class: &Class, prefix: &str
     writeln!(out, "        if (value != null) callback(value);").unwrap();
     writeln!(out, "      }},").unwrap();
     writeln!(out, "    );").unwrap();
-    writeln!(
-        out,
-        "    _listeners.add(callable);  // keeps the trampoline alive"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "    return _bindings.{}({self_arg}callable.nativeFunction, ffi.nullptr);",
-        c_add_listener_symbol(prefix, &class.name)
-    )
-    .unwrap();
     writeln!(out, "  }}").unwrap();
     writeln!(out).unwrap();
-
-    writeln!(out, "  /// Unregisters a listener. Returns false if unknown.").unwrap();
     writeln!(
         out,
-        "{keyword}bool removeListener(ListenerId listenerId) =>"
+        "  /// Unregisters a listener and releases its callback on success."
+    )
+    .unwrap();
+    writeln!(out, "  ///").unwrap();
+    writeln!(
+        out,
+        "  /// Returns `false` if the listener is unknown or removal fails."
+    )
+    .unwrap();
+    writeln!(out, "  bool removeListener(ListenerId listenerId) {{").unwrap();
+    if instance {
+        writeln!(out, "    if (_disposed) return false;").unwrap();
+    }
+    writeln!(out, "    final emitter = {identity};").unwrap();
+    writeln!(
+        out,
+        "    final removed = _bindings.{remove}({self_arg}listenerId);"
     )
     .unwrap();
     writeln!(
         out,
-        "      _bindings.{}({self_arg}listenerId);",
-        c_remove_listener_symbol(prefix, &class.name)
+        "    if (removed) _listeners.close(emitter, listenerId);"
     )
     .unwrap();
+    writeln!(out, "    return removed;").unwrap();
+    writeln!(out, "  }}").unwrap();
     writeln!(out).unwrap();
     writeln!(
         out,
-        "  /// Trampolines stay reachable for as long as the C side may call them."
+        "  static final _listeners = ListenerRegistry<{native_type}>();"
     )
     .unwrap();
-    writeln!(out, "  static final List<Object> _listeners = <Object>[];").unwrap();
-    writeln!(out).unwrap();
-}
-
-/// Whether any member of this class takes a callback, and so needs somewhere to
-/// park the trampoline.
-fn class_takes_callback(class: &Class) -> bool {
-    class
-        .methods
-        .iter()
-        .flat_map(|method| method.params.iter())
-        .chain(class.constructors.iter().flat_map(|ctor| ctor.params.iter()))
-        .any(|param| is_callback(&param.ty))
+    if instance {
+        writeln!(out, "  int _pendingRegistrations = 0;").unwrap();
+    }
 }
 
 fn emitted_group<'a>(api: &'a Api, class: &Class) -> Option<&'a EventGroup> {
@@ -1152,15 +1406,6 @@ fn render_callback_binding(
     writeln!(out, "{indent}    {name}({});", forwarded.join(", ")).unwrap();
     writeln!(out, "{indent}  }},").unwrap();
     writeln!(out, "{indent});").unwrap();
-    if optional {
-        writeln!(
-            out,
-            "{indent}if ({name}Callable != null) _listeners.add({name}Callable);"
-        )
-        .unwrap();
-    } else {
-        writeln!(out, "{indent}_listeners.add({name}Callable);").unwrap();
-    }
 }
 
 /// Frees whatever `render_param_bindings` allocated, after the call.
@@ -1339,7 +1584,9 @@ fn render_return(
             if needs_cleanup {
                 render_param_cleanup(out, params, "    ");
             }
-            writeln!(out, "    if (handle == 0) return null;").unwrap();
+            let registered_shortcut =
+                name == "Shortcut" && call.contains("native_shortcut_manager_register");
+            render_callback_result(out, registered_shortcut, true, params);
             writeln!(out, "    return {name}.fromHandle(handle);").unwrap();
         }
         TypeRef::Vector { element } if matches!(element.as_ref(), TypeRef::String) => {
@@ -1548,4 +1795,134 @@ fn dart_enum_case(name: &str) -> String {
 
 fn is_callback(ty: &TypeRef) -> bool {
     codegen_shared::naming::is_callback(ty)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use codegen_shared::ir::ClassKind;
+
+    fn fixture(name: &str, kind: ClassKind, event: bool) -> (Api, Header, Class) {
+        let class = Class {
+            name: name.into(),
+            qualified_name: format!("nativeapi::{name}"),
+            kind,
+            native_object: false,
+            constructors: vec![],
+            methods: vec![],
+            event: event.then(|| "MenuEvent".into()),
+        };
+        let header = Header {
+            path: "menu.h".into(),
+            stem: "menu".into(),
+            namespace: "nativeapi".into(),
+            enums: vec![],
+            structs: vec![],
+            classes: vec![class.clone()],
+            aliases: vec![],
+            events: vec![EventGroup {
+                name: "MenuEvent".into(),
+                qualified_name: "nativeapi::MenuEvent".into(),
+                common: vec![],
+                variants: vec![],
+            }],
+        };
+        let api = Api {
+            headers: vec![header.clone()],
+            diagnostics: vec![],
+        };
+        (api, header, class)
+    }
+
+    #[test]
+    fn instance_listener_cleanup_precedes_handle_release() {
+        let (api, header, class) = fixture("MenuItem", ClassKind::Instance, true);
+        let mut out = String::new();
+        render_dart_class(&mut out, &api, &header, &class, "native_");
+        assert!(out.contains("Finalizer<int>(\n    _releaseHandle,"));
+        assert!(
+            out.find("_listeners.dispose(nativeHandle").unwrap()
+                < out
+                    .find("_bindings.native_menu_item_free(nativeHandle)")
+                    .unwrap()
+        );
+        assert!(out.contains("final emitter = _bindings.native_menu_item_get_id(nativeHandle)"));
+        assert!(out.contains("if (removed) _listeners.close(emitter, listenerId)"));
+        assert!(out.contains("_pendingRegistrations == 0"));
+        assert!(!out.contains("List<Object>"));
+    }
+
+    #[test]
+    fn singleton_listeners_are_keyed_and_closed() {
+        let (api, header, class) = fixture("Application", ClassKind::Singleton, true);
+        let mut out = String::new();
+        render_dart_class(&mut out, &api, &header, &class, "native_");
+        assert!(out.contains("static const Application instance"));
+        assert!(out.contains("_listeners.add(emitter, id, 0, callable)"));
+        assert!(out.contains("if (id == 0) {\n        callable.close();"));
+        assert!(!out.contains("nativeHandle"));
+    }
+
+    #[test]
+    fn shortcut_registration_has_distinct_ownership_and_failure_cleanup() {
+        let (_, header, class) = fixture("ShortcutManager", ClassKind::Singleton, false);
+        let callback = Param {
+            name: "callback".into(),
+            ty: TypeRef::Callback { params: vec![] },
+        };
+        let method = Method {
+            name: "Register".into(),
+            return_type: TypeRef::Object {
+                name: "Shortcut".into(),
+                qualified_name: "nativeapi::Shortcut".into(),
+                shared: true,
+            },
+            params: vec![
+                Param {
+                    name: "accelerator".into(),
+                    ty: TypeRef::String,
+                },
+                callback.clone(),
+            ],
+            is_const: false,
+            is_static: false,
+        };
+        let mut out = String::new();
+        render_dart_method(&mut out, &class, &method, &header, "native_");
+        assert!(out.contains("if (handle == 0) {\n      callbackCallable.close();"));
+        assert!(out.contains("shortcutCallbacks.register(handle, callbackCallable)"));
+        out.clear();
+        render_callback_result(&mut out, true, false, &[callback]);
+        assert!(out.contains("shortcutCallbacks.create(handle, callbackCallable)"));
+    }
+
+    #[test]
+    fn hook_replacement_closes_only_after_installing_native_pointer() {
+        let (_, header, class) = fixture("WindowManager", ClassKind::Singleton, false);
+        for name in ["SetWillShowHook", "SetWillHideHook"] {
+            let method = Method {
+                name: name.into(),
+                return_type: TypeRef::Void,
+                params: vec![Param {
+                    name: "hook".into(),
+                    ty: TypeRef::Optional {
+                        inner: Box::new(TypeRef::Callback {
+                            params: vec![TypeRef::Int {
+                                name: "unsigned int".into(),
+                            }],
+                        }),
+                    },
+                }],
+                is_const: false,
+                is_static: false,
+            };
+            let mut out = String::new();
+            render_dart_method(&mut out, &class, &method, &header, "native_");
+            assert!(
+                out.find("_bindings.native_window_manager_set_").unwrap()
+                    < out.find("previous?.close()").unwrap()
+            );
+            assert!(!out.contains("_listeners.add"));
+        }
+    }
 }

@@ -1,0 +1,119 @@
+import 'dart:ffi' as ffi;
+
+import 'package:cnativeapi/cnativeapi.dart' as c;
+
+/// Keeps listener callbacks alive until native unregistration succeeds.
+///
+/// Listener IDs are local to an emitter. Aliases share an emitter identity, but
+/// disposal removes only the listeners added through the disposing handle.
+class ListenerRegistry<T extends Function> {
+  final _entries =
+      <(int, int), ({int handle, ffi.NativeCallable<T> callable})>{};
+  final _disposing = <int>{};
+
+  bool isDisposing(int handle) => _disposing.contains(handle);
+
+  void add(int emitter, int id, int handle, ffi.NativeCallable<T> callable) {
+    _entries[(emitter, id)] = (handle: handle, callable: callable);
+  }
+
+  void close(int emitter, int id) {
+    _entries.remove((emitter, id))?.callable.close();
+  }
+
+  void dispose(int handle, bool Function(int, int) remove) {
+    if (!_disposing.add(handle)) return;
+    try {
+      // Native removal may dispatch callbacks that modify this registry.
+      for (final entry in _entries.entries.toList()) {
+        if (entry.value.handle == handle && remove(handle, entry.key.$2)) {
+          close(entry.key.$1, entry.key.$2);
+        }
+      }
+    } finally {
+      _disposing.remove(handle);
+    }
+  }
+}
+
+typedef ShortcutCallable =
+    ffi.NativeCallable<ffi.Void Function(ffi.Pointer<ffi.Void>)>;
+
+class _ShortcutCallbacks {
+  ShortcutCallable? callable;
+  bool registered = false;
+  final handles = <int>{};
+}
+
+/// A manager registration owns its callback independently of any Dart wrapper.
+///
+/// Standalone handles have separate state even when their user-supplied IDs match.
+class ShortcutCallbackRegistry {
+  final _handles = <int, _ShortcutCallbacks>{};
+  final _registered = <int, _ShortcutCallbacks>{};
+  c.CNativeApiBindings get _bindings => c.cnativeApiBindings;
+
+  void create(int handle, ShortcutCallable? callable) {
+    final state = _ShortcutCallbacks()..callable = callable;
+    state.handles.add(handle);
+    _handles[handle] = state;
+  }
+
+  void register(int handle, ShortcutCallable? callable) {
+    create(handle, callable);
+    final state = _handles[handle]!;
+    state.registered = true;
+    _registered[_bindings.native_shortcut_get_id(handle)] = state;
+  }
+
+  void attach(int handle) {
+    if (handle == 0 || _handles.containsKey(handle)) return;
+    final state =
+        _registered[_bindings.native_shortcut_get_id(handle)] ??
+        _ShortcutCallbacks();
+    state.handles.add(handle);
+    _handles[handle] = state;
+  }
+
+  void replace(int handle, ShortcutCallable callable) {
+    if (handle == 0) {
+      callable.close();
+      return;
+    }
+    attach(handle);
+    final state = _handles[handle]!;
+    final previous = state.callable;
+    _bindings.native_shortcut_set_callback(
+      handle,
+      callable.nativeFunction,
+      ffi.nullptr,
+    );
+    state.callable = callable;
+    previous?.close();
+  }
+
+  void unregister(int id) {
+    final state = _registered.remove(id);
+    if (state == null) return;
+    state.registered = false;
+    state.callable?.close();
+    state.callable = null;
+  }
+
+  List<int> get registeredIds => _registered.keys.toList();
+
+  void release(int handle) {
+    final state = _handles.remove(handle);
+    if (state == null) return;
+    state.handles.remove(handle);
+    if (!state.registered && state.handles.isEmpty) {
+      // Other native references may outlive this handle. Clear their function
+      // pointer before closing the Dart trampoline.
+      _bindings.native_shortcut_set_callback(handle, ffi.nullptr, ffi.nullptr);
+      state.callable?.close();
+      state.callable = null;
+    }
+  }
+}
+
+final shortcutCallbacks = ShortcutCallbackRegistry();
